@@ -1,0 +1,18 @@
+services:
+  codar:
+    build: .
+    image: codar-gateway:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CODAR_PORT:-8801}:8801"
+    environment:
+      CODAR_ADMIN_PASSWORD: ${CODAR_ADMIN_PASSWORD:-}
+      CODAR_SECURE_COOKIE: ${CODAR_SECURE_COOKIE:-false}
+      CODAR_MAX_CONCURRENT: ${CODAR_MAX_CONCURRENT:-128}
+      TZ: Asia/Shanghai
+    volumes:
+      - codar-data:/data
+    stop_grace_period: 30s
+
+volumes:
+  codar-data:

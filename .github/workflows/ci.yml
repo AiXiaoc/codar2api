@@ -1,0 +1,42 @@
+name: Test and build
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go vet ./...
+      - run: go test -race ./... -count=1 -timeout=120s
+      - run: test -z "$(gofmt -l cmd internal)"
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [linux-amd64, linux-arm64, windows-amd64, darwin-amd64, darwin-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - shell: bash
+        run: |
+          export GOOS="${{ matrix.target }}"
+          export GOARCH="${GOOS#*-}"
+          export GOOS="${GOOS%%-*}"
+          export CGO_ENABLED=0
+          name=codar2api
+          if [ "$GOOS" = windows ]; then name=codar2api.exe; fi
+          go build -trimpath -ldflags="-s -w" -o "dist/$name" ./cmd/codar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codar2api-${{ matrix.target }}
+          path: dist/

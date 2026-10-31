@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codar2API</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/app2.css">
+</head>
+<body>
+<header class="top">
+  <button type="button" class="brand" data-tab="accounts">Codar2API</button>
+  <nav class="nav" role="tablist" aria-label="页面"><button type="button" role="tab" data-tab="accounts" data-ic="users">账号</button><button type="button" role="tab" data-tab="stats" data-ic="chart">统计</button><button type="button" role="tab" data-tab="models" data-ic="cube">模型</button><button type="button" role="tab" data-tab="keys" data-ic="key">API Key</button><button type="button" role="tab" data-tab="proxies" data-ic="globe">代理池</button><button type="button" role="tab" data-tab="settings" data-ic="gear">设置</button><a class="gh" href="https://github.com/AiXiaoc/codar2api" target="_blank" rel="noopener noreferrer" title="GitHub 仓库" aria-label="GitHub 仓库（新窗口打开）"><svg class="ic gh-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a></nav>
+  <span></span>
+</header>
+<main class="main">
+  <div id="annBar"></div>
+
+  <div data-page="accounts">
+    <div class="page-head"><h1>账号</h1><div class="head-act"><button type="button" class="btn" id="addOpen" data-ic="plus">添加账号</button>
+      <div class="menu-wrap"><button type="button" class="btn ghost" id="bulkMenu" data-ic="more" aria-haspopup="menu" aria-expanded="false" aria-controls="bulkList">批量</button>
+        <div class="menu" id="bulkList" role="menu" hidden><button type="button" role="menuitem" id="signAll" data-ic="cal">全部签到</button><button type="button" role="menuitem" id="refreshAll" data-ic="refresh">刷新全部账号</button><button type="button" role="menuitem" id="proxyAll" data-ic="globe">全部设置代理</button></div></div></div></div>
+    <div class="stats3"><div class="stat c1" id="cardPool"></div><div class="stat c2" id="cardCredit"></div>
+      <div class="stat c3"><div class="stat-k">消耗速度<select id="rateUnit" class="unit" aria-label="消耗速度单位"><option value="1">/ 秒</option><option value="60">/ 分</option><option value="3600">/ 时</option><option value="86400">/ 天</option><option value="604800">/ 周</option></select></div>
+        <div class="stat-v" id="rateVal">-</div><div class="stat-s" id="rateSub">正在读取额度明细…</div></div></div>
+    <div class="filters"><div class="seg" id="accFilter" role="group" aria-label="状态筛选"></div>
+      <button type="button" class="alert-chip" id="cdAll" hidden></button><button type="button" class="alert-chip bad" id="restrictionAll" hidden></button><button type="button" class="alert-chip bad" id="ipAll" hidden></button>
+      <label class="field search" data-ic="search"><input id="accSearch" placeholder="搜索用户名 / ID / 备注" aria-label="搜索账号"></label></div>
+    <div class="tbl acc-tbl"><table class="t"><thead><tr><th class="pick"><label><input id="selectVisibleAccounts" type="checkbox" aria-label="选择当前筛选的全部账号"></label></th><th>账号</th><th>状态</th><th class="w-q">额度</th><th>令牌剩余</th><th>启用</th><th></th></tr></thead>
+      <tbody id="accBody"><tr class="empty-row"><td colspan="7" class="empty">加载中…</td></tr></tbody></table></div>
+    <div class="batchbar" id="batchBar" role="group" aria-label="账号批量操作" hidden><b id="selectedCount" aria-live="polite"></b><button type="button" class="btn soft sm" id="selectAllAccounts"></button>
+      <button type="button" class="btn soft sm" data-batch="enable">启用</button><button type="button" class="btn soft sm" data-batch="disable">禁用</button><button type="button" class="btn soft sm" data-batch="clear_restriction">解除受限</button><button type="button" class="btn danger sm" data-batch="delete">删除</button>
+      <button type="button" class="ibtn sm" id="clearAccountSelection" title="取消选择" aria-label="取消选择" data-ic="x"></button></div>
+  </div>
+
+  <div data-page="stats" hidden>
+    <div class="page-head"><h1>统计</h1><div class="seg" id="statWin" role="group" aria-label="统计时间范围"><button type="button" data-h="1">1 小时</button><button type="button" data-h="24">24 小时</button><button type="button" data-h="168">7 天</button></div></div>
+    <div class="kpis" id="statCards"></div>
+    <section class="panel"><div class="panel-h"><h2>按模型</h2></div><div class="tbl"><table class="t"><thead><tr><th>模型</th><th class="num">请求</th><th class="num">成功率</th><th class="num">输入 / 输出</th><th class="num">缓存命中</th><th class="num">TPS</th><th class="num">首字</th><th class="num">估算花费</th></tr></thead><tbody id="statModels"></tbody></table></div></section>
+    <div class="grid2"><section class="panel tape-b"><div class="panel-h"><h2>按账号</h2></div><div class="tbl"><table class="t"><thead><tr><th>账号</th><th class="num">请求</th><th class="num">成功率</th><th class="num">缓存命中</th><th class="num">估算花费</th></tr></thead><tbody id="statAccounts"></tbody></table></div></section>
+      <section class="panel"><div class="panel-h"><h2>上游用量<span class="tip" tabindex="0" data-tip="Codar 官方统计，含这些账号在所有客户端的调用，不只经本网关；按北京时间分日" data-ic="info"></span></h2>
+        <div class="panel-act"><div class="seg sm" id="upWin" role="group" aria-label="上游用量时间范围"><button type="button" data-updays="7">7 天</button><button type="button" data-updays="14">14 天</button><button type="button" data-updays="30">30 天</button></div><button type="button" class="ibtn sm" id="upReload" title="刷新" aria-label="刷新上游用量" data-ic="refresh"></button></div></div><div id="upBody"></div></section></div>
+    <section class="panel tape-b"><div class="panel-h"><h2>最近请求</h2></div><div class="tbl"><table class="t"><thead><tr><th>时间</th><th>模型</th><th>接口</th><th>账号</th><th>结果</th><th class="num">输入 / 缓存 / 输出</th><th class="num">首字</th><th class="num">耗时</th><th class="num">花费</th></tr></thead><tbody id="statRecent"></tbody></table></div></section>
+  </div>
+
+  <div data-page="models" hidden>
+    <div class="page-head"><div><h1>模型</h1><p class="sub" id="catAt"></p></div><button type="button" class="btn ghost" id="catRefresh" data-ic="refresh">从上游刷新</button></div>
+    <div class="model-grid" id="catBody"></div>
+  </div>
+
+  <div data-page="keys" hidden>
+    <div class="page-head"><h1>API Key</h1><button type="button" class="btn" id="keyOpen" data-ic="plus">新建 Key</button></div>
+    <div class="base-url"><span class="muted">Base URL</span><code id="apiBase"></code><button type="button" class="ibtn sm" id="apiBaseCopy" title="复制" aria-label="复制 Base URL" data-ic="copy"></button><span class="grow"></span><span class="muted small">OpenAI Chat · Responses · Anthropic Messages</span></div>
+    <div class="list" id="keysBody"></div>
+  </div>
+
+  <div data-page="proxies" hidden>
+    <div class="page-head"><h1>代理池</h1><button type="button" class="btn" id="poolOpen" data-ic="plus">添加代理</button></div>
+    <div class="list" id="proxiesBody"></div>
+  </div>
+
+  <div data-page="settings" hidden>
+    <div class="page-head"><h1>设置</h1><div class="head-act"><button type="button" class="btn ghost" id="setReset">恢复默认</button><button type="button" class="btn" id="setSave">保存</button></div></div>
+    <div class="grid2" id="setGrid"></div>
+    <section class="panel"><div class="panel-h"><h2>模型价格</h2>
+      <div class="panel-act"><span class="muted small">元 / 百万 token</span><label class="field"><input id="priceNew" class="mono" placeholder="添加模型 ID" aria-label="添加模型 ID"></label><button type="button" class="btn soft sm" id="priceAdd">添加</button></div></div>
+      <div class="tbl"><table class="t"><thead><tr><th>模型</th><th class="num">输入</th><th class="num">缓存命中</th><th class="num">输出</th><th></th></tr></thead><tbody id="priceBody"></tbody></table></div></section>
+    <section class="panel tape-b"><div class="panel-h"><h2>管理员</h2></div>
+      <form id="passwordForm" class="pw"><label class="field" data-ic="lock"><input id="currentPassword" type="password" placeholder="当前密码" aria-label="当前密码" autocomplete="current-password" required></label><label class="field" data-ic="lock"><input id="nextPassword" type="password" placeholder="新密码，至少 10 位" aria-label="新密码" autocomplete="new-password" required minlength="10" maxlength="1024"></label><button type="submit" class="btn">修改密码</button></form>
+      <div class="row" style="margin-top:14px"><span class="muted small">改密码后需要重新登录，已有 API Key 不受影响</span><span class="grow"></span><button type="button" class="btn danger" id="logout" data-ic="out">退出登录</button></div></section>
+  </div>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drwTitle" hidden>
+  <div class="dr-head"><div class="grow" style="min-width:0"><b id="drwTitle"></b><div class="dr-st" id="drwState"></div></div><span id="drwSw"></span><button type="button" class="ibtn" data-close aria-label="关闭" data-ic="x"></button></div>
+  <nav class="dr-tabs" role="tablist" aria-label="账号详情"><button type="button" role="tab" data-dtab="overview">概览</button><button type="button" role="tab" data-dtab="requests">请求记录</button><button type="button" role="tab" data-dtab="sign">签到兑换</button><button type="button" role="tab" data-dtab="activity">活动邀请</button><button type="button" role="tab" data-dtab="usage">用量</button><button type="button" role="tab" data-dtab="proxy">代理</button></nav>
+  <div class="dr-body" id="drwBody"></div>
+  <div class="dr-foot" id="drwFoot"></div>
+</aside>
+
+<div class="modal-back" id="addModal" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="addTitle">
+  <div class="modal-h"><h2 id="addTitle">添加账号</h2><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div>
+  <div class="ways" id="addSeg" role="tablist" aria-label="添加方式"></div><div class="way-body" id="addBody"></div></div></div>
+<div class="modal-back" id="proxyModal" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="proxyTitle">
+  <div class="modal-h"><h2 id="proxyTitle">全部账号设置代理</h2><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div><div class="stack" id="proxyBody"></div></div></div>
+<div class="modal-back" id="keyModal" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="keyTitle">
+  <div class="modal-h"><h2 id="keyTitle">新建 API Key</h2><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div>
+  <form id="keyForm"><label class="lbl">名称<input id="keyName" class="in" maxlength="100" placeholder="例如 Claude Code 本机" required></label><label class="lbl" id="keyExpiryRow">到期时间（可选）<input id="keyExpiry" class="in" type="datetime-local"></label>
+    <div class="lbl">可调度的模型<div class="seg" id="keyScope" role="group" aria-label="可调度的模型"><button type="button" data-scope="all" aria-pressed="true">全部模型</button><button type="button" data-scope="pick" aria-pressed="false">指定模型</button></div></div>
+    <div id="keyPick" hidden><div class="row" style="margin-bottom:8px"><span class="muted small" id="keyPickCount"></span><span class="grow"></span><button type="button" class="link" id="keyPickAll">全选</button><button type="button" class="link" id="keyPickNone">清空</button></div><div class="pickers" id="keyModelList"></div></div><button type="submit" class="btn block" id="keyCreate">创建</button></form>
+  <div class="reveal" id="newKey" hidden><b>完整 Key 只显示这一次，请现在复制</b><div class="field"><input id="newKeyValue" class="mono" readonly aria-label="新 API Key"><button type="button" class="ibtn xs" id="keyCopy" title="复制" aria-label="复制 Key" data-ic="copy"></button></div><button type="button" class="btn block" id="keyDismiss">我已保存</button></div></div></div>
+<div class="modal-back" id="poolModal" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="poolTitle">
+  <div class="modal-h"><h2 id="poolTitle">添加代理</h2><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div>
+  <form id="proxyForm"><input id="proxyEditID" type="hidden">
+    <div class="stack" id="proxyAddBox"><textarea id="proxyBatch" class="in" aria-label="代理列表" placeholder="每行一个代理，前面可以加名称，例如&#10;东京-01 socks5h://user:pass@1.2.3.4:1080&#10;1.2.3.4:8080&#10;1.2.3.4:8080:user:pass"></textarea>
+      <label class="lbl">没写协议的行按<select id="proxyScheme" class="in"><option value="http">http</option><option value="https">https</option><option value="socks5">socks5</option><option value="socks5h">socks5h</option></select></label><div id="proxyResult"></div></div>
+    <div class="stack" id="proxyEditBox" hidden><label class="field"><input id="proxyName" placeholder="名称" aria-label="代理名称" maxlength="100"></label>
+      <label class="field" data-ic="lock"><input id="proxyURL" type="password" placeholder="socks5h://user:pass@host:port" aria-label="代理地址" autocomplete="off"></label></div>
+    <p class="hint" id="proxyHint"></p><button type="submit" class="btn block" id="proxySave">添加</button></form></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/assets/ui.js"></script>
+<script src="/assets/accounts.js"></script>
+<script src="/assets/drawer.js"></script>
+<script src="/assets/add.js"></script>
+<script src="/assets/manage.js"></script>
+<script src="/assets/pages.js"></script>
+</body>
+</html>

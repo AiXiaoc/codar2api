@@ -1,0 +1,51 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./... -count=1 -timeout=120s
+      - name: Build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          mkdir -p dist
+          for target in linux-amd64 linux-arm64 windows-amd64 darwin-amd64 darwin-arm64; do
+            export GOOS="${target%%-*}" GOARCH="${target#*-}" CGO_ENABLED=0
+            name="codar2api-$tag-$target"
+            bin=codar2api
+            if [ "$GOOS" = windows ]; then bin=codar2api.exe; fi
+            mkdir -p "dist/$name"
+            go build -trimpath -ldflags="-s -w -X github.com/codar-gateway/codar-gateway/internal/gateway.Version=${tag#v}" -o "dist/$name/$bin" ./cmd/codar
+            cp README.md LICENSE .env.example "dist/$name/"
+            cp -r deploy "dist/$name/"
+            if [ "$GOOS" = windows ]; then (cd dist && zip -qr "$name.zip" "$name");
+            else tar -czf "dist/$name.tar.gz" -C dist "$name"; fi
+          done
+          # File names only, so `sha256sum -c SHA256SUMS` works in the download folder.
+          (cd dist && sha256sum *.zip *.tar.gz > SHA256SUMS)
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=".github/releases/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; elif gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then set --; else set -- --generate-notes; fi
+          files=(dist/*.zip dist/*.tar.gz dist/SHA256SUMS)
+          # Re-pushing a tag republishes: replace the assets and notes of the existing release.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "Codar2API $GITHUB_REF_NAME" "$@"
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --title "Codar2API $GITHUB_REF_NAME" "$@"
+          fi

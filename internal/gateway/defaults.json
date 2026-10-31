@@ -1,0 +1,117 @@
+{
+  "PRICE_DEFAULTS": {
+    "claude-opus-5-5": [
+      4.0,
+      20.0,
+      0.2,
+      "usd",
+      "Anthropic 官方 $4 / $20，缓存读 $0.20"
+    ],
+    "claude-opus-5-5-kiro": [
+      4.0,
+      20.0,
+      0.2,
+      "usd",
+      "同 claude-opus-5-5"
+    ],
+    "claude-opus-5": [
+      5.0,
+      25.0,
+      0.5,
+      "usd",
+      "Anthropic 官方 $5 / $25，缓存读 $0.50"
+    ],
+    "claude-opus-5-kiro": [
+      5.0,
+      25.0,
+      0.5,
+      "usd",
+      "同 claude-opus-5"
+    ],
+    "claude-sonnet-5": [
+      2.0,
+      10.0,
+      0.2,
+      "usd",
+      "Anthropic 官方 $2 / $10；缓存读按 0.1 倍估"
+    ],
+    "claude-sonnet-5-kiro": [
+      2.0,
+      10.0,
+      0.2,
+      "usd",
+      "同 claude-sonnet-5"
+    ],
+    "gpt-6-astra": [
+      10.0,
+      50.0,
+      1.0,
+      "usd",
+      "OpenAI 官方 $10 / $50，缓存 $1"
+    ],
+    "gpt-6-sol": [
+      2.0,
+      10.0,
+      0.2,
+      "usd",
+      "OpenAI $2 / $10；缓存按 GPT-6.1 Sol 公告反推"
+    ],
+    "gpt-5.6-sol": [
+      5.0,
+      30.0,
+      0.5,
+      "usd",
+      "标价 $5 / $30（另有 $4 / $20 限时价）；缓存按 0.1 倍估"
+    ],
+    "deepseek-v4.1-flash": [
+      2.0,
+      8.0,
+      0.04,
+      "cny",
+      "DeepSeek 官方高峰价 ¥2 / ¥8，缓存 ¥0.04"
+    ],
+    "deepseek-v4-flash": [
+      2.0,
+      8.0,
+      0.04,
+      "cny",
+      "已由 V4.1-Flash 承接，按 Flash 价"
+    ],
+    "deepseek-v4-pro": [
+      9.0,
+      27.0,
+      0.3,
+      "cny",
+      "DeepSeek 官方高峰价 ¥9 / ¥27，缓存 ¥0.3"
+    ],
+    "glm-5.3": [
+      1.4,
+      4.4,
+      0.26,
+      "usd",
+      "未查到官方人民币价，用 Z.ai 美元价 $1.4 / $4.4"
+    ],
+    "glm-5.2": [
+      1.4,
+      4.4,
+      0.26,
+      "usd",
+      "未查到价格，按同基座的 GLM-5.3"
+    ],
+    "glm-5.3-flash": [
+      0.15,
+      0.5,
+      0.03,
+      "usd",
+      "未查到官方人民币价，用 Z.ai 美元价 $0.15 / $0.5"
+    ]
+  },
+  "PRICE_SOURCES": {
+    "cny": "官方人民币价",
+    "usd": "官方美元价（1:1）",
+    "catalog": "Codar 目录价",
+    "custom": "手动设置"
+  },
+  "CAPTCHA_ID": "bb7f810ecc9f6d21dcf72bcae120c8c5",
+  "CAPTCHA_JS": "https://static.alicaptcha.com/v4/ct4.js"
+}

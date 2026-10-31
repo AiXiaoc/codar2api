@@ -1,0 +1,24 @@
+[Unit]
+Description=Codar2API gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codar
+Group=codar
+WorkingDirectory=/opt/codar
+EnvironmentFile=-/etc/codar.env
+ExecStart=/opt/codar/codar2api --addr 127.0.0.1:8801 --data-dir /var/lib/codar
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/codar
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
