@@ -103,7 +103,8 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		apiError(w, 400, "请指定 model")
 		return
 	}
-	if r.URL.Path == "/v1/chat/completions" {
+	settings := a.store.Settings()
+	if r.URL.Path == "/v1/chat/completions" && yes(settings["dsh_identity_rewrite"]) {
 		normalizeHarnessIdentity(p)
 	}
 	isStream := yes(p["stream"])
@@ -156,7 +157,6 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		apiError(w, status, msg)
 	}
 	tried := map[string]bool{}
-	settings := a.store.Settings()
 	attempts := max(1, int(num(settings["max_attempts"])))
 	if explicit != nil {
 		attempts = 1

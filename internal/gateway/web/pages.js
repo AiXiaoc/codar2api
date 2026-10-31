@@ -64,7 +64,7 @@ $('#upWin').addEventListener('click', e => { const b = e.target.closest('[data-u
 $('#upReload').onclick = () => loadUpstream().catch(err => toast(err.message, true));
 /* ---- 设置：按用途分组，每项后面一句话说明规则 ---- */
 let SET = null, PRICES = [];
-const SET_GROUPS = [['请求转发', ['use_codar_ua', 'codar_ua']],
+const SET_GROUPS = [['请求转发', ['use_codar_ua', 'codar_ua', 'dsh_identity_rewrite']],
   ['调度与换号', ['max_attempts', 'session_sticky', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'allow_general_balance']],
   ['自动任务', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']]];
 function drawSettings(vals){

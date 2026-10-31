@@ -151,6 +151,7 @@ type settingSpec struct {
 var schema = []settingSpec{
 	{"use_codar_ua", "bool", true, nil, nil, "使用 Codar UA", "模型请求转发前统一替换 User-Agent，保存后立即生效。"},
 	{"codar_ua", "string", defaultCodarUA, nil, 1024, "Codar UA", "默认取自 Codar 桌面端 HAR，可编辑；关闭开关后保留此值。"},
+	{"dsh_identity_rewrite", "bool", true, nil, nil, "DSH身份提示词替换", "替换 DeepSeek Harness 开发者或系统消息开头的固定身份描述，保留其余内容。"},
 	{"auto_claim", "bool", true, nil, nil, "自动领取免费模型活动", "导入与后台检查时自动领取可参加的免费模型活动。"},
 	{"allow_general_balance", "bool", true, nil, nil, "允许使用通用余额", "Agent 余额用完后允许使用通用余额。"},
 	{"auto_renew_token", "bool", true, nil, nil, "令牌自动续期", "令牌接近到期时自动续期。"},

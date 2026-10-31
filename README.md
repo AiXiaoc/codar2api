@@ -35,7 +35,7 @@ Codar2API 是一个独立运行的 Go 网关：把多个 Codar 账号汇成一�
 
 - **多协议转发**：OpenAI `/v1/chat/completions`、`/v1/responses`，Anthropic `/v1/messages`、`/v1/messages/count_tokens`，流式与非流式都支持，上游自行转换协议。
 - **Codar UA**：设置 → 请求转发中可开关、编辑 User-Agent，默认使用 HAR 中的 Codar 桌面端 UA；模型转发、模型目录及面板调用测试在发往上游前统一替换，保存后立即生效。关闭后恢复原有 UA，登录、签到等账号请求保持原有行为。
-- **DeepSeek Harness 兼容**：Chat 请求中若开发者或系统消息以 `You are an AI agent powered by DeepSeek Harness.` 开头，网关会将这句身份描述改为 `You are an AI coding agent.`，其余消息和工具定义不变，以避免上游拒绝该客户端请求。
+- **DeepSeek Harness 兼容**：设置 → 请求转发中可开关「DSH身份提示词替换」，默认开启、保存立即生效。Chat 请求中若开发者或系统消息以 `You are an AI agent powered by DeepSeek Harness.` 开头，网关会将这句身份描述改为 `You are an AI coding agent.`，其余消息和工具定义不变；关闭后保留原始内容。
 - **临时请求诊断**：启动时增加 `--request-diagnostics` 或设置 `CODAR_REQUEST_DIAGNOSTICS=true`，在数据目录生成 `request-diagnostics.jsonl`。按请求编号记录入站请求、实际转发的头与 JSON 正文、上游状态和最终结果，隐藏凭证；仍会记录对话内容，仅保存在本机。默认关闭，日志保留当前文件和一个轮换文件，每个文件最多约 64 MB。
 - **号池调度**：轮询选号、会话粘滞、限流 / 余额 / 错误冷却，收到响应前出错自动换号重试（默认最多 3 个账号）。
 - **免费模型与余额判断**：领取了免费模型活动的账号可继续调度免费模型；余额用完只暂停收费模型。
