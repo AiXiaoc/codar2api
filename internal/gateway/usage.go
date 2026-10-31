@@ -42,11 +42,16 @@ type streamTap struct {
 	buf, data    []byte
 	raw, billing M
 	err          string
+	terminal     string
 	onError      func(M)
 }
 
 func newTap(onError func(M)) *streamTap { return &streamTap{raw: M{}, onError: onError} }
 func (t *streamTap) inspect(v M) {
+	switch v["type"] {
+	case "message_stop", "response.completed":
+		t.terminal = text(v["type"])
+	}
 	for _, h := range holders(v) {
 		for k, v := range obj(h["usage"]) {
 			if v != nil {
@@ -78,9 +83,14 @@ func (t *streamTap) inspect(v M) {
 }
 func (t *streamTap) event() {
 	if len(t.data) > 0 {
-		var v M
-		if json.Unmarshal(bytes.TrimSpace(t.data), &v) == nil && v != nil {
-			t.inspect(v)
+		data := bytes.TrimSpace(t.data)
+		if bytes.Equal(data, []byte("[DONE]")) {
+			t.terminal = "[DONE]"
+		} else {
+			var v M
+			if json.Unmarshal(data, &v) == nil && v != nil {
+				t.inspect(v)
+			}
 		}
 	}
 	t.data = nil

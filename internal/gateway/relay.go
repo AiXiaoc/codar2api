@@ -347,36 +347,56 @@ func (a *App) pipe(w http.ResponseWriter, r *http.Request, account M, resp *http
 		_ = controller.Flush()
 		buf := make([]byte, 32<<10)
 		first := true
+		var readError error
+		var writeError error
+		var streamBytes int64
 		for {
 			n, e := resp.Body.Read(buf)
+			readError = e
 			if n > 0 {
+				streamBytes += int64(n)
 				if first {
 					row["ttft_ms"] = time.Since(t0).Milliseconds()
 					first = false
 				}
 				tap.Feed(buf[:n])
 				if _, we := w.Write(buf[:n]); we != nil {
-					row["ok"] = false
-					row["error"] = "客户端已断开"
-					row["client_aborted"] = true
+					writeError = we
 					break
 				}
 				if fe := controller.Flush(); fe != nil {
-					row["ok"] = false
-					row["client_aborted"] = true
-					row["error"] = "客户端已断开"
+					writeError = fe
 					break
 				}
 			}
-			if e != nil {
-				if e != io.EOF {
-					row["ok"] = false
-					row["error"] = "上游流提前断开"
-				}
+			// SSE completion is independent of the HTTP connection closing. Once
+			// delivered, do not wait for another read that can race a client cancel.
+			if tap.terminal != "" || e != nil {
 				break
 			}
 		}
 		tap.Finish()
+		row["stream_completed"] = tap.terminal != ""
+		if tap.terminal != "" {
+			row["stream_end"] = tap.terminal
+		}
+		if writeError != nil || tap.terminal == "" && r.Context().Err() != nil {
+			row["ok"] = false
+			row["client_aborted"] = true
+			row["error"] = "客户端已断开"
+		} else if tap.terminal == "" {
+			row["ok"] = false
+			row["error"] = "上游流提前断开（未收到结束标记）"
+		}
+		if trace := diagnosticFor(r); trace != nil {
+			details := M{"completed": tap.terminal != "", "terminal": tap.terminal, "bytes": streamBytes, "protocol": resp.Proto}
+			for k, e := range map[string]error{"read_error": readError, "write_error": writeError, "client_context_error": r.Context().Err()} {
+				if e != nil {
+					details[k] = e.Error()
+				}
+			}
+			trace.record("stream_termination", details)
+		}
 	} else {
 		body, e := io.ReadAll(io.LimitReader(resp.Body, 32<<20+1))
 		if e != nil || len(body) > 32<<20 {
