@@ -349,6 +349,10 @@ go vet ./...
 
 没有第三方 Go 依赖。测试使用本地模拟的 Codar 上游和 HTTP / HTTPS / SOCKS5 代理，不消耗真实短信或模型额度。管理界面文件在 `internal/gateway/web/`，构建时嵌入可执行文件。
 
+## 友情链接
+
+- [LINUX DO](https://linux.do/)
+
 ## 免责声明
 
 本项目仅供学习和研究使用。使用者需遵守 [Codar](https://codar.speedai.com/) 服务条款，自行承担使用风险（包括账号封禁、条款违约等）。作者不对任何因使用本项目产生的直接或间接损失负责。本项目与科搭 Codar、SpeedAI 无任何关联，Codar 名称与图标归其所有者。
