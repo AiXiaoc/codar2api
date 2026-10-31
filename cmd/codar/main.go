@@ -29,6 +29,7 @@ func run() error {
 	var oldDir, hubProxies string
 	flag.StringVar(&cfg.Addr, "addr", env("CODAR_ADDR", "127.0.0.1:8801"), "HTTP listen address")
 	flag.StringVar(&cfg.DataDir, "data-dir", env("CODAR_DATA_DIR", "data"), "persistent data directory")
+	flag.BoolVar(&cfg.RequestDiagnostics, "request-diagnostics", env("CODAR_REQUEST_DIAGNOSTICS", "") == "true", "record redacted model request diagnostics locally")
 	flag.StringVar(&oldDir, "import-python", "", "copy a Python Codar data directory into a new empty data directory and exit")
 	flag.StringVar(&hubProxies, "import-hub-proxies", "", "import Codar bindings from a Hub proxies.json with --import-python")
 	flag.BoolVar(&version, "version", false, "print version and exit")

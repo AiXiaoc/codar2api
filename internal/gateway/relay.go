@@ -139,6 +139,9 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		if counted {
 			a.usage.Record(row)
 		}
+		if trace := diagnosticFor(r); trace != nil {
+			trace.record("relay_result", row)
+		}
 		if key != nil {
 			a.auth.Count(text(key["id"]), num(usage["prompt"])+num(usage["completion"]))
 		}
@@ -233,8 +236,16 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		if strings.HasPrefix(r.URL.Path, "/v1/messages") && req.Header.Get("anthropic-version") == "" {
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
+		trace := diagnosticFor(r)
+		if trace != nil {
+			trace.secrets = append(trace.secrets, text(chosen["token"]))
+			trace.record("upstream_request", M{"attempt": attempt + 1, "account_uid": uid, "api_key_name": key["name"], "url": req.URL.Scheme + "://" + req.URL.Host + req.URL.Path, "headers": diagnosticHeaders(req.Header), "body": p, "json_bytes": len(raw), "json_sha256": digest(string(raw)), "route_id": route.ID})
+		}
 		resp, e := a.proxies.Do(req, route)
 		if e != nil {
+			if trace != nil {
+				trace.record("upstream_network_error", M{"attempt": attempt + 1, "error": e.Error()})
+			}
 			cancel()
 			if r.Context().Err() != nil {
 				row["error"] = "客户端已取消请求"
@@ -247,10 +258,16 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			failTry(0, lastError)
 			continue
 		}
+		if trace != nil {
+			trace.record("upstream_response", M{"attempt": attempt + 1, "status": resp.StatusCode, "headers": diagnosticHeaders(resp.Header)})
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, e := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
 			resp.Body.Close()
 			cancel()
+			if trace != nil {
+				trace.record("upstream_error_body", M{"attempt": attempt + 1, "body": string(body)})
+			}
 			if e != nil || len(body) > 1<<20 {
 				lastError = "读取上游错误响应失败"
 				lastBody = nil

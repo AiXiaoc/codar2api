@@ -26,6 +26,7 @@ type Config struct {
 	// DefaultPassword is used on first start when Password is empty (Windows: "admin").
 	DefaultPassword            string
 	SecureCookie, NoBackground bool
+	RequestDiagnostics         bool
 	MaxConcurrent              int
 }
 
@@ -80,6 +81,7 @@ type App struct {
 	flows         map[string]M
 	qr            map[string]M
 	priceDefaults M
+	diagnostics   *requestDiagnosticLog
 }
 
 func New(cfg Config) (*App, string, error) {
@@ -102,6 +104,10 @@ func New(cfg Config) (*App, string, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{cfg: cfg, store: store, auth: auth, proxies: proxies, usage: usage, ctx: ctx, cancel: cancel, gates: make(chan struct{}, cfg.MaxConcurrent), ann: M{"items": []any{}}, rate: M{}, flows: map[string]M{}, qr: map[string]M{}}
+	if cfg.RequestDiagnostics {
+		a.diagnostics = &requestDiagnosticLog{path: filepath.Join(cfg.DataDir, "request-diagnostics.jsonl")}
+		log.Printf("request diagnostics enabled: %s", a.diagnostics.path)
+	}
 	b, _ := assets.ReadFile("defaults.json")
 	var d M
 	_ = json.Unmarshal(b, &d)
@@ -153,6 +159,10 @@ func payload(w http.ResponseWriter, r *http.Request) (M, error) {
 	if e := dec.Decode(new(any)); e != io.EOF {
 		return nil, errors.New("请求体只能包含一个 JSON 对象")
 	}
+	if trace := diagnosticFor(r); trace != nil {
+		b := mustMarshal(m)
+		trace.record("incoming_body", M{"body": m, "json_bytes": len(b), "json_sha256": digest(string(b))})
+	}
 	return m, nil
 }
 func isChat(path string) bool {
@@ -163,6 +173,12 @@ func isChat(path string) bool {
 	return false
 }
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if a.diagnostics != nil && isChat(path) && r.Method == "POST" {
+		var finish func()
+		w, r, finish = a.diagnostics.begin(w, r)
+		defer finish()
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
 	defer func() {
@@ -171,7 +187,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 500, "内部错误，请检查服务日志")
 		}
 	}()
-	path := r.URL.Path
 	if isChat(path) || path == "/v1/models" {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, X-Codar-Account")
