@@ -103,6 +103,9 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		apiError(w, 400, "请指定 model")
 		return
 	}
+	if r.URL.Path == "/v1/chat/completions" {
+		normalizeHarnessIdentity(p)
+	}
 	isStream := yes(p["stream"])
 	if r.URL.Path == "/v1/chat/completions" && isStream {
 		opts := obj(p["stream_options"])
