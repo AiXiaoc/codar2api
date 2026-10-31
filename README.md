@@ -234,6 +234,7 @@ curl http://127.0.0.1:8801/v1/chat/completions \
 ### 流式行为细节
 
 - SSE 字节原样透传，同时解析其中的用量和错误事件。
+- 收到 `[DONE]`、Anthropic `message_stop` 或 Responses `response.completed` 后按协议结束流式响应；完整响应不会因随后连接关闭而误报失败。客户端提前断开与上游未发送结束标记会分别记录，流中的业务错误仍记录为失败。
 - OpenAI Chat 流式请求会自动加上 `stream_options.include_usage`，以便统计用量。
 - 流式响应开始输出后不会再换号或重新提交。
 - 客户端断开会立即取消上游请求。

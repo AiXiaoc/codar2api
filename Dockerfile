@@ -1,7 +1,7 @@
 ARG GO_IMAGE=golang:1.26.4-alpine
 ARG RUNTIME_IMAGE=alpine:3.22
 FROM ${GO_IMAGE} AS build
-ARG VERSION=0.1.1
+ARG VERSION=0.1.2
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
