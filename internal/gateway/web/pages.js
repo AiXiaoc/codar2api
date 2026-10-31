@@ -62,22 +62,24 @@ async function loadUpstream(){
 }
 $('#upWin').addEventListener('click', e => { const b = e.target.closest('[data-updays]'); if(!b) return; UPDAYS = +b.dataset.updays; loadUpstream().catch(err => toast(err.message, true)); });
 $('#upReload').onclick = () => loadUpstream().catch(err => toast(err.message, true));
-/* ---- 设置：按用途分两组，每项后面一句话说明规则 ---- */
+/* ---- 设置：按用途分组，每项后面一句话说明规则 ---- */
 let SET = null, PRICES = [];
-const SET_GROUPS = [['调度与换号', ['max_attempts', 'session_sticky', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'allow_general_balance']],
+const SET_GROUPS = [['请求转发', ['use_codar_ua', 'codar_ua']],
+  ['调度与换号', ['max_attempts', 'session_sticky', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'allow_general_balance']],
   ['自动任务', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']]];
 function drawSettings(vals){
   const known = SET_GROUPS.flatMap(g => g[1]), groups = SET_GROUPS.map(g => [g[0], g[1].slice()]);
   SET.schema.forEach(f => { if(!known.includes(f.key)) groups[groups.length - 1][1].push(f.key); });
-  const field = f => '<div class="set"><div class="set-l"><b>' + esc(f.label) + '</b>' + (f.help ? '<span class="muted">' + esc(f.help) + '</span>' : '') + '</div>'
+  const field = f => '<div class="set' + (f.type === 'string' ? ' set-text' : '') + '"><div class="set-l"><b>' + esc(f.label) + '</b>' + (f.help ? '<span class="muted">' + esc(f.help) + '</span>' : '') + '</div>'
     + (f.type === 'bool' ? sw(vals[f.key], f.label, 'data-k="' + f.key + '" title="默认' + (f.default ? '开' : '关') + '"')
+      : f.type === 'string' ? '<textarea class="in mono" data-k="' + f.key + '" maxlength="' + f.max + '" rows="3" aria-label="' + esc(f.label) + '" spellcheck="false">' + esc(vals[f.key]) + '</textarea>'
       : '<input class="in num-in" type="number" data-k="' + f.key + '" min="' + f.min + '" max="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" title="默认 ' + f.default + '，范围 ' + f.min + ' 至 ' + f.max + '">') + '</div>';
   $('#setGrid').innerHTML = groups.map((g, i) => '<section class="panel' + (i ? ' tape-b' : '') + '"><div class="panel-h"><h2>' + g[0] + '</h2></div><div class="sets">'
     + g[1].map(k => SET.schema.find(f => f.key === k)).filter(Boolean).map(field).join('') + '</div></section>').join('');
 }
 function formValues(){
   const out = {};
-  document.querySelectorAll('#setGrid [data-k]').forEach(el => { out[el.dataset.k] = el.classList.contains('sw') ? el.getAttribute('aria-checked') === 'true' : Number(el.value); });
+  document.querySelectorAll('#setGrid [data-k]').forEach(el => { out[el.dataset.k] = el.classList.contains('sw') ? el.getAttribute('aria-checked') === 'true' : el.type === 'number' ? Number(el.value) : el.value; });
   return out;
 }
 async function loadSettings(){ SET = await api('/settings'); drawSettings(SET.settings); loadPrices().catch(err => toast(err.message, true)); }

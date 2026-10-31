@@ -39,6 +39,7 @@ details.more{margin-top:14px}details.more summary{cursor:pointer;font-size:13px;
 .sets{display:flex;flex-direction:column}.set{display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:2px dashed var(--soft)}.set:last-child{border-bottom:0}
 .set-l{display:flex;flex:1;flex-direction:column}.set-l b{font-weight:800}.set-l .muted{font-size:12px}
 .num-in{width:96px;text-align:center}.price-in{width:88px;padding:3px 8px;text-align:right}
+.set-text{align-items:stretch;flex-direction:column;gap:8px}.set-text textarea{width:100%;min-height:88px;resize:vertical;overflow-wrap:anywhere}
 .pw{display:flex;flex-wrap:wrap;gap:10px}.pw .field{flex:1;min-width:200px}
 /* 抽屉 */
 .scrim{position:fixed;inset:0;z-index:40;background:rgba(42,38,34,.35)}

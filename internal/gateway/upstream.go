@@ -149,6 +149,9 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "node")
+	if chat || u != nil && u.Path == "/v1/codar/models" {
+		req.Header.Set("User-Agent", modelUserAgent(a.store.Settings(), "node"))
+	}
 	if account != nil && text(account["token"]) != "" {
 		req.Header.Set("Authorization", "Bearer "+text(account["token"]))
 	}

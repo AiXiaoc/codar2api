@@ -223,7 +223,7 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		req.Header.Set("Authorization", "Bearer "+text(chosen["token"]))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept-Encoding", "identity")
-		req.Header.Set("User-Agent", "Go-http-client/1.1")
+		req.Header.Set("User-Agent", modelUserAgent(settings, "Go-http-client/1.1"))
 		req.Header.Set("Accept", str(r.Header.Get("Accept"), "*/*"))
 		for _, h := range []string{"anthropic-version", "anthropic-beta"} {
 			if value := r.Header.Get(h); value != "" {

@@ -149,6 +149,8 @@ type settingSpec struct {
 }
 
 var schema = []settingSpec{
+	{"use_codar_ua", "bool", true, nil, nil, "使用 Codar UA", "模型请求转发前统一替换 User-Agent，保存后立即生效。"},
+	{"codar_ua", "string", defaultCodarUA, nil, 1024, "Codar UA", "默认取自 Codar 桌面端 HAR，可编辑；关闭开关后保留此值。"},
 	{"auto_claim", "bool", true, nil, nil, "自动领取免费模型活动", "导入与后台检查时自动领取可参加的免费模型活动。"},
 	{"allow_general_balance", "bool", true, nil, nil, "允许使用通用余额", "Agent 余额用完后允许使用通用余额。"},
 	{"auto_renew_token", "bool", true, nil, nil, "令牌自动续期", "令牌接近到期时自动续期。"},
@@ -183,6 +185,21 @@ func cleanSettings(p M, base M) (M, error) {
 			if _, ok := v.(bool); !ok {
 				return nil, fmt.Errorf("%s 必须是布尔值", s.Key)
 			}
+		} else if s.Type == "string" {
+			value, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s 必须是文本", s.Label)
+			}
+			value = strings.TrimSpace(value)
+			if value == "" || len(value) > int(num(s.Max)) {
+				return nil, fmt.Errorf("%s 不能为空，且不能超过 %v 个字符", s.Label, s.Max)
+			}
+			for _, c := range value {
+				if c < 32 || c > 126 {
+					return nil, fmt.Errorf("%s 只能包含可打印的英文字符、数字和符号，不能换行", s.Label)
+				}
+			}
+			v = value
 		} else {
 			f, ok := v.(float64)
 			if !ok {
