@@ -24,10 +24,18 @@ func sessionHint(r *http.Request, p M) string {
 	if user := text(obj(p["metadata"])["user_id"]); user != "" {
 		return digest(user)
 	}
-	for _, v := range arr(p["messages"]) {
-		if obj(v)["role"] == "user" {
-			b, _ := json.Marshal(obj(v)["content"])
-			return digest(string(b))
+	// Without an explicit id, the first user message stands for the conversation.
+	// The Responses API sends it in "input", as text or a list of items.
+	if s, ok := p["input"].(string); ok && s != "" {
+		b, _ := json.Marshal(s)
+		return digest(string(b))
+	}
+	for _, list := range []any{p["messages"], p["input"]} {
+		for _, v := range arr(list) {
+			if obj(v)["role"] == "user" {
+				b, _ := json.Marshal(obj(v)["content"])
+				return digest(string(b))
+			}
 		}
 	}
 	return ""
@@ -147,7 +155,11 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 	if explicit != nil {
 		attempts = 1
 	}
-	hint := text(key["id"]) + ":" + sessionHint(r, p)
+	// Requests with no session at all get no hint, so they rotate through the pool.
+	hint := ""
+	if s := sessionHint(r, p); s != "" {
+		hint = text(key["id"]) + ":" + s
+	}
 	var lastBody []byte
 	lastStatus := 503
 	lastType := "application/json"
@@ -398,7 +410,16 @@ func (a *App) pipe(w http.ResponseWriter, r *http.Request, account M, resp *http
 	a.store.mu.Unlock()
 	return usage
 }
-func (a *App) testAccount(ctx context.Context, account M, model string) M {
+
+// testAccount sends one non-streaming chat request from the panel. The quick
+// test sends "Hi" with a 16-token cap; the call dialog passes its own prompt.
+func (a *App) testAccount(ctx context.Context, account M, model, prompt string, maxTokens int) M {
+	if prompt == "" {
+		prompt = "Hi"
+	}
+	if maxTokens <= 0 {
+		maxTokens = 16
+	}
 	if model == "" {
 		free := freeModels(account, now())
 		if len(free) > 0 {
@@ -411,7 +432,7 @@ func (a *App) testAccount(ctx context.Context, account M, model string) M {
 		return M{"ok": false, "error": reason, "model": model}
 	}
 	t := time.Now()
-	d, e := a.requestJSON(ctx, "POST", a.cfg.APIBase+"/v1/chat/completions", account, nil, M{"model": model, "messages": []any{M{"role": "user", "content": "Hi"}}, "max_tokens": 16, "stream": false})
+	d, e := a.requestJSONWithin(ctx, 3*time.Minute, "POST", a.cfg.APIBase+"/v1/chat/completions", account, nil, M{"model": model, "messages": []any{M{"role": "user", "content": prompt}}, "max_tokens": maxTokens, "stream": false})
 	row := M{"path": "/v1/chat/completions", "source": "panel", "model": model, "uid": account["uid"], "account": account["username"], "stream": false, "ms": time.Since(t).Milliseconds(), "status": 200, "ok": e == nil}
 	result := M{"ok": e == nil, "model": model, "elapsed_ms": row["ms"]}
 	if e != nil {
@@ -431,9 +452,11 @@ func (a *App) testAccount(ctx context.Context, account M, model string) M {
 		result["reply"] = reply
 		tap := newTap(nil)
 		tap.inspect(d)
-		for k, v := range normalizeUsage(tap.raw) {
+		usage := normalizeUsage(tap.raw)
+		for k, v := range usage {
 			row[k] = v
 		}
+		result["usage"] = usage
 	}
 	a.usage.Record(row)
 	return result

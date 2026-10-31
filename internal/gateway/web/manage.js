@@ -12,6 +12,7 @@ async function loadKeys(){
       + '<div class="l-meta"><div title="' + esc(k.models.join('\n')) + '">' + esc(scope) + '</div><div>' + (!k.expires_at ? '长期有效' : expired ? fmtS(k.expires_at) + ' 已到期' : fmtS(k.expires_at) + ' 到期') + '</div></div>'
       + '<div class="l-use"><b>' + nf(k.requests || 0) + '</b> 次 · ' + fmtTok(k.tokens || 0) + ' token<div class="muted">' + (k.last_used ? ago(k.last_used) + '使用' : '还没用过') + '</div></div>'
       + sw(k.enabled, '启用 Key ' + k.name, 'data-key-action="toggle" data-id="' + esc(k.id) + '"')
+      + '<button type="button" class="ibtn sm" data-key-action="copy" data-id="' + esc(k.id) + '"' + (k.copyable ? ' title="复制完整 Key"' : ' disabled title="旧版本创建的 Key 只保存了哈希，无法再复制，请新建一个"') + ' aria-label="复制 Key ' + esc(k.name) + '">' + ic('copy') + '</button>'
       + '<button type="button" class="ibtn sm" data-key-action="edit" data-id="' + esc(k.id) + '" title="编辑名称和模型" aria-label="编辑 Key ' + esc(k.name) + '">' + ic('edit') + '</button>'
       + '<button type="button" class="ibtn sm danger" data-key-action="delete" data-id="' + esc(k.id) + '" title="删除" aria-label="删除 Key ' + esc(k.name) + '">' + ic('trash') + '</button></article>';
   }).join('') || '<div class="empty-box">还没有 API Key，新建一个就能接入客户端</div>';
@@ -44,7 +45,7 @@ function openKeyModal(k){
   keyScope(selected.length ? 'pick' : 'all'); keyPicker(selected);
   openModal('#keyModal', '#keyName');
 }
-/* 完整 Key 只显示一次：显示后点空白处或按 Esc 不关闭，要点「我已保存」或右上角关闭 */
+/* 新 Key 显示后点空白处或按 Esc 不关闭，免得没复制就关掉；之后也能在列表里复制 */
 MODAL_CLOSE['#keyModal'] = (id, how) => { if(!$('#newKey').hidden && how !== 'button') return; $('#newKeyValue').value = ''; closeModal(id); };
 $('#keyOpen').onclick = () => openKeyModal(null);
 $('#keyScope').onclick = e => { const b = e.target.closest('[data-scope]'); if(b) keyScope(b.dataset.scope); };
@@ -66,15 +67,18 @@ $('#keyForm').onsubmit = async e => {
   } catch(err){ managementError(err); } finally { b.disabled = false; }
 };
 $('#keyDismiss').onclick = () => requestClose('#keyModal', 'button');
-$('#keyCopy').onclick = async () => {
-  const input = $('#newKeyValue');
-  try { await navigator.clipboard.writeText(input.value); toast('已复制'); } catch(e){ input.select(); toast('复制失败，请手动复制已选中的 Key', true); }
-};
-$('#apiBaseCopy').onclick = async () => { try { await navigator.clipboard.writeText($('#apiBase').textContent); toast('已复制 Base URL'); } catch(e){ toast($('#apiBase').textContent); } };
+$('#keyCopy').onclick = async () => { const input = $('#newKeyValue'); if(await copyText(input.value)) return toast('已复制'); input.select(); toast('复制失败，请手动复制已选中的 Key', true); };
+$('#apiBaseCopy').onclick = async () => (await copyText($('#apiBase').textContent)) ? toast('已复制 Base URL') : toast($('#apiBase').textContent);
 $('#keysBody').onclick = async e => {
   const b = e.target.closest('[data-key-action]'); if(!b) return;
   const k = MANAGED_KEYS.find(k => k.id === b.dataset.id); if(!k) return;
   if(b.dataset.keyAction === 'edit') return openKeyModal(k);
+  if(b.dataset.keyAction === 'copy'){
+    b.disabled = true;
+    try { const r = await api('/keys', {action: 'reveal', id: k.id}); (await copyText(r.token)) ? toast('已复制 Key「' + k.name + '」') : toast('复制失败：浏览器不允许访问剪贴板', true); }
+    catch(err){ managementError(err); } finally { b.disabled = false; }
+    return;
+  }
   const del = b.dataset.keyAction === 'delete';
   if(del && !confirm('删除 Key「' + k.name + '」？用它的客户端会马上无法请求。')) return;
   b.disabled = true;

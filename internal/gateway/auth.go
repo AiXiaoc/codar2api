@@ -16,7 +16,8 @@ import (
 	"time"
 )
 
-// Passwords use PBKDF2-HMAC-SHA256. API keys and session IDs have 256 random bits.
+// Passwords use PBKDF2-HMAC-SHA256. API keys and session IDs have 256 random bits;
+// keys are matched by their SHA-256 and also kept in keys.json for copying.
 func passwordHash(password, salt string) string {
 	mac := hmac.New(sha256.New, []byte(password))
 	mac.Write([]byte(salt))
@@ -177,7 +178,16 @@ func (a *Auth) ChangePassword(old, password string) error {
 	a.sessions = map[string]time.Time{}
 	return nil
 }
-func publicKey(k M) M { d := clone(k); delete(d, "hash"); return d }
+
+// publicKey hides the hash and the stored key. Keys keep their full value so the
+// panel can copy them again; keys from older versions only have the hash.
+func publicKey(k M) M {
+	d := clone(k)
+	d["copyable"] = text(k["token"]) != ""
+	delete(d, "hash")
+	delete(d, "token")
+	return d
+}
 func (a *Auth) Keys() []M {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -191,6 +201,17 @@ func (a *Auth) KeysAction(p M) (M, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	action := text(p["action"])
+	if action == "reveal" {
+		for _, k := range a.keys {
+			if k["id"] == p["id"] {
+				if text(k["token"]) == "" {
+					return nil, errors.New("这个 Key 由旧版本创建，只保存了哈希，无法再复制，请新建一个")
+				}
+				return M{"ok": true, "token": k["token"]}, nil
+			}
+		}
+		return nil, errors.New("未找到 API Key")
+	}
 	next := clone(a.keys)
 	var result M
 	switch action {
@@ -208,7 +229,7 @@ func (a *Auth) KeysAction(p M) (M, error) {
 			return nil, e
 		}
 		token := "sk-codar-" + random(32)
-		k := M{"id": random(8), "name": name, "hash": digest(token), "prefix": token[:17], "enabled": true, "created_at": now(), "expires_at": exp, "models": models, "requests": 0, "tokens": 0}
+		k := M{"id": random(8), "name": name, "hash": digest(token), "token": token, "prefix": token[:17], "enabled": true, "created_at": now(), "expires_at": exp, "models": models, "requests": 0, "tokens": 0}
 		next = append(next, k)
 		result = M{"ok": true, "key": publicKey(k), "token": token}
 	case "update", "delete":

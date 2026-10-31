@@ -159,7 +159,8 @@ function drawDrawer(a){
   /* 正在抽屉里输入（备注 / 兑换码 / 代理）时，定时刷新不重画内容，免得吞掉输入 */
   const el = document.activeElement, typing = $('#drawer').contains(el) && /INPUT|TEXTAREA|SELECT/.test(el.tagName);
   if(!typing) $('#drwBody').innerHTML = DRAW[DTAB](a);
-  $('#drwFoot').innerHTML = '<button type="button" class="btn soft sm" data-act="test"' + (a.restricted ? ' disabled title="请先解除受限"' : '') + '>' + ic('play') + '测试</button>'
+  $('#drwFoot').innerHTML = '<button type="button" class="btn soft sm" data-act="call"' + (a.restricted ? ' disabled title="请先解除受限"' : '') + '>' + ic('chat') + '调用</button>'
+    + '<button type="button" class="btn soft sm" data-act="test"' + (a.restricted ? ' disabled title="请先解除受限"' : '') + '>' + ic('play') + '测试</button>'
     + '<button type="button" class="btn soft sm" data-act="refresh">' + ic('refresh') + '刷新</button>'
     + (a.restricted ? '<button type="button" class="btn soft sm" data-act="unrestrict">解除受限</button>' : '')
     + (cooling(a) ? '<button type="button" class="btn soft sm" data-act="reset">取消冷却</button>' : a.last_error ? '<button type="button" class="btn soft sm" data-act="reset">清除错误</button>' : '')
@@ -184,6 +185,7 @@ $('#scrim').onclick = closeDrawer;
 async function act(name, a){
   const uid = a.uid, who = a.username || uid;
   if(name === 'relogin'){ if(SEL) closeDrawer(); return openAdd(); }
+  if(name === 'call') return openCall(a);
   if(name === 'refresh'){ const x = (await api('/accounts/refresh', {uid})).results[0]; toast(x.ok ? '已刷新 ' + who : '刷新失败：' + x.error, !x.ok); }
   if(name === 'test'){ const r = await api('/accounts/test', {uid}); toast(r.ok ? '测试通过（' + r.model + '，' + r.elapsed_ms + ' ms）：' + r.reply : '测试失败：' + r.error, !r.ok); delete RCACHE[uid]; }
   if(name === 'claim'){ const r = await api('/accounts/claim', {uid}); toast(r.ok ? '领取成功，免费至 ' + fmt((r.free || {}).free_until) : '领取失败：' + r.error, !r.ok); }
@@ -219,7 +221,7 @@ async function onAct(e, uid){
 $('#drawer').addEventListener('click', async e => {
   if(e.target.closest('[data-close]')) return closeDrawer();
   const cp = e.target.closest('[data-copy]');
-  if(cp){ try { await navigator.clipboard.writeText(cp.dataset.copy); toast('已复制'); } catch(err){ toast(cp.dataset.copy); } return; }
+  if(cp){ (await copyText(cp.dataset.copy)) ? toast('已复制') : toast(cp.dataset.copy); return; }
   const t = e.target.closest('[data-dtab]');
   if(t){ DTAB = t.dataset.dtab; const a = ROWS.find(x => x.uid === SEL); if(!a) return; t.focus();
     if(DTAB === 'requests') fetchRequests(SEL, (RCACHE[SEL] || {}).page || 1, true);

@@ -64,7 +64,8 @@ function row(a){
     + (picked ? ' checked' : '') + (BATCH_BUSY ? ' disabled' : '') + '></label></td>'
     + '<td><button type="button" class="nm"><b>' + esc(a.username || a.uid) + '</b>' + (a.note ? '<span class="note" title="' + esc(a.note) + '">' + esc(a.note) + '</span>' : '') + '</button>' + px + '</td>'
     + '<td>' + stateCell(a) + '</td><td class="w-q">' + quotaCell(a) + '</td><td class="exp">' + expCell(a) + '</td><td>' + accountSwitch(a) + '</td>'
-    + '<td class="row-act"><button type="button" class="ibtn sm" data-act="test" title="' + (a.restricted ? '请先解除受限' : '测试') + '" aria-label="测试"' + (a.restricted ? ' disabled' : '') + '>' + ic('play') + '</button>'
+    + '<td class="row-act"><button type="button" class="ibtn sm" data-act="call" title="' + (a.restricted ? '请先解除受限' : '调用：选模型、写提示词测试') + '" aria-label="调用"' + (a.restricted ? ' disabled' : '') + '>' + ic('chat') + '</button>'
+    + '<button type="button" class="ibtn sm" data-act="test" title="' + (a.restricted ? '请先解除受限' : '测试') + '" aria-label="测试"' + (a.restricted ? ' disabled' : '') + '>' + ic('play') + '</button>'
     + '<button type="button" class="ibtn sm" data-act="refresh" title="刷新" aria-label="刷新">' + ic('refresh') + '</button><span class="chev">' + ic('right') + '</span></td></tr>';
 }
 const isOk = a => a.enabled && a.ready;

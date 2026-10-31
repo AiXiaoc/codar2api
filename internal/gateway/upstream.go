@@ -115,6 +115,12 @@ func (a *App) route(account M, pinned *Route) (Route, error) {
 	return a.proxies.Pin(0)
 }
 func (a *App) requestJSON(ctx context.Context, method, endpoint string, account M, pinned *Route, body any) (M, error) {
+	return a.requestJSONWithin(ctx, 45*time.Second, method, endpoint, account, pinned, body)
+}
+
+// requestJSONWithin is requestJSON with a caller-chosen deadline, for panel
+// model calls that may generate longer replies.
+func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method, endpoint string, account M, pinned *Route, body any) (M, error) {
 	u, e := url.Parse(endpoint)
 	chat := e == nil && isChat(u.Path)
 	if chat && account != nil {
@@ -122,7 +128,7 @@ func (a *App) requestJSON(ctx context.Context, method, endpoint string, account 
 			return nil, &UpstreamError{Status: 403, Message: "账号受限，请手动解除受限标记"}
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	route, e := a.route(account, pinned)
 	if e != nil {

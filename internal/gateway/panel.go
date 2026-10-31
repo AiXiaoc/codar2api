@@ -171,6 +171,12 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 		return d, 400, e
 	case "/accounts/import-batch":
 		return a.importBatch(ctx, p), 200, nil
+	case "/accounts/export":
+		d, e := a.exportAccounts(p)
+		return d, 400, e
+	case "/accounts/import":
+		d, e := a.importAccounts(ctx, p)
+		return d, 400, e
 	case "/accounts/add":
 		d, e := a.importToken(ctx, text(p["token"]), text(p["note"]), "token", nil)
 		return d, statusOf(e), e
@@ -337,7 +343,15 @@ func (a *App) operateAccount(ctx context.Context, path, uid string, p M) M {
 			a.refresh(ctx, acc, []string{"balance"})
 		}
 	case "/accounts/test":
-		return a.testAccount(ctx, acc, text(p["model"]))
+		prompt := strings.TrimSpace(text(p["prompt"]))
+		if len([]rune(prompt)) > 8000 {
+			return M{"ok": false, "error": "提示词最多 8000 个字符"}
+		}
+		limit := int(num(p["max_tokens"]))
+		if limit < 0 || limit > 8192 {
+			return M{"ok": false, "error": "max_tokens 必须是 1 至 8192"}
+		}
+		return a.testAccount(ctx, acc, strings.TrimSpace(text(p["model"])), prompt, limit)
 	default:
 		save = false
 		e = errors.New("未知的账号操作")
@@ -376,6 +390,97 @@ func parallel(ctx context.Context, accounts []M, fn func(M) M) []M {
 	wg.Wait()
 	return results
 }
+
+const exportFormat = "codar2api-accounts"
+
+// exportAccounts returns the chosen accounts (all when uids is absent) with
+// their tokens, so the file can restore them into another gateway.
+func (a *App) exportAccounts(p M) (M, error) {
+	pick := map[string]bool{}
+	if v, ok := p["uids"]; ok {
+		list, ok := v.([]any)
+		if !ok {
+			return nil, errors.New("uids 必须是数组")
+		}
+		for _, id := range list {
+			pick[text(id)] = true
+		}
+	}
+	rows := []any{}
+	for _, acc := range a.store.List() {
+		if len(pick) > 0 && !pick[text(acc["uid"])] {
+			continue
+		}
+		rows = append(rows, M{"uid": acc["uid"], "username": acc["username"], "display_name": acc["display_name"], "token": acc["token"], "note": acc["note"], "enabled": yes(acc["enabled"]), "login_via": acc["login_via"], "added_at": acc["added_at"]})
+	}
+	if len(rows) == 0 {
+		return nil, errors.New("没有可导出的账号")
+	}
+	return M{"ok": true, "format": exportFormat, "version": 1, "exported_at": now(), "accounts": rows}, nil
+}
+
+// importAccounts restores an export file. Every token is checked with the
+// upstream like a pasted token; existing accounts keep their own settings and
+// new ones take the exported note, login method and enabled state.
+func (a *App) importAccounts(ctx context.Context, p M) (M, error) {
+	if f, ok := p["format"]; ok && f != exportFormat {
+		return nil, errors.New("不是 Codar2API 导出的账号文件")
+	}
+	list, ok := p["accounts"].([]any)
+	if !ok || len(list) == 0 {
+		return nil, errors.New("文件里没有账号")
+	}
+	if len(list) > 500 {
+		return nil, errors.New("一次最多导入 500 个账号")
+	}
+	items, seen := []M{}, map[string]bool{}
+	for i, v := range list {
+		m := obj(v)
+		token := strings.TrimSpace(text(m["token"]))
+		if s, ok := v.(string); ok {
+			token = strings.TrimSpace(s)
+		}
+		if seen[token] && token != "" {
+			continue
+		}
+		seen[token] = true
+		via := text(m["login_via"])
+		if via != "wechat" && via != "phone" && via != "local" {
+			via = "token"
+		}
+		note := []rune(strings.TrimSpace(text(m["note"])))
+		items = append(items, M{"index": i + 1, "token": token, "note": string(note[:min(len(note), 200)]), "via": via, "enabled": m["enabled"]})
+	}
+	rows := parallel(ctx, items, func(v M) M {
+		r := M{"index": v["index"], "token_masked": masked(text(v["token"]))}
+		d, e := a.importToken(ctx, text(v["token"]), text(v["note"]), text(v["via"]), nil)
+		if e == nil && !yes(d["updated"]) && v["enabled"] == false {
+			e = a.store.Update(text(obj(d["account"])["uid"]), func(c M) error { c["enabled"] = false; return nil })
+		}
+		if e != nil {
+			r["ok"], r["error"] = false, safeMessage(e.Error())
+			return r
+		}
+		r["ok"], r["updated"], r["uid"], r["username"] = true, d["updated"], obj(d["account"])["uid"], obj(d["account"])["username"]
+		return r
+	})
+	return importSummary(rows), nil
+}
+func importSummary(rows []M) M {
+	added, updated, failed := 0, 0, 0
+	items := []any{}
+	for _, row := range rows {
+		items = append(items, row)
+		if !yes(row["ok"]) {
+			failed++
+		} else if yes(row["updated"]) {
+			updated++
+		} else {
+			added++
+		}
+	}
+	return M{"ok": true, "total": len(rows), "added": added, "updated": updated, "failed": failed, "results": items}
+}
 func (a *App) importBatch(ctx context.Context, p M) M {
 	input := text(p["text"])
 	if input == "" {
@@ -408,19 +513,7 @@ func (a *App) importBatch(ctx context.Context, p M) M {
 		}
 		return r
 	})
-	added, updated, failed := 0, 0, 0
-	items := []any{}
-	for _, row := range rows {
-		items = append(items, row)
-		if !yes(row["ok"]) {
-			failed++
-		} else if yes(row["updated"]) {
-			updated++
-		} else {
-			added++
-		}
-	}
-	return M{"ok": true, "total": len(rows), "added": added, "updated": updated, "failed": failed, "results": items}
+	return importSummary(rows)
 }
 func (a *App) usageAll(ctx context.Context, start, end string) (M, error) {
 	if e := usageRange(start, end); e != nil {

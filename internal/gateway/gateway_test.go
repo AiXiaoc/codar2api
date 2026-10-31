@@ -194,9 +194,30 @@ func TestIndependentAuthenticationAndKeyScope(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if bytes.Contains(b, []byte(h.key)) || bytes.Contains(b, []byte("test-admin-password")) {
-			t.Fatal("plaintext secret stored")
+		if bytes.Contains(b, []byte("test-admin-password")) {
+			t.Fatal("plaintext admin password stored")
 		}
+	}
+}
+func TestKeyCanBeCopiedAgain(t *testing.T) {
+	h := newHarness(t, nil)
+	id := h.app.auth.Keys()[0]["id"]
+	if _, b := h.request(t, "GET", "/keys", nil, false); bytes.Contains(b, []byte(h.key)) || !bytes.Contains(b, []byte(`"copyable":true`)) {
+		t.Fatalf("key list leaks the key or hides that it can be copied: %s", b)
+	}
+	for i := 0; i < 2; i++ {
+		if r := h.post(t, "/keys", M{"action": "reveal", "id": id}); r["token"] != h.key {
+			t.Fatalf("copy %d returned %v", i+1, r)
+		}
+	}
+	h.app.auth.mu.Lock()
+	delete(h.app.auth.keys[0], "token") // a key created before keys were stored
+	h.app.auth.mu.Unlock()
+	if resp, b := h.request(t, "POST", "/keys", M{"action": "reveal", "id": id}, false); resp.StatusCode != 400 || !strings.Contains(string(b), "旧版本") {
+		t.Fatalf("old key should explain it cannot be copied: %d %s", resp.StatusCode, b)
+	}
+	if resp, _ := h.request(t, "GET", "/v1/models", nil, true); resp.StatusCode != 200 {
+		t.Fatal("old key without stored value stopped working")
 	}
 }
 func TestKeyModelScopeCanBeEdited(t *testing.T) {
@@ -441,6 +462,82 @@ func TestAccountRequestRecordsKeepSwitchedAttempts(t *testing.T) {
 		t.Fatalf("switched attempt not persisted: %v", d)
 	}
 }
+func TestAccountExportImportRoundTrip(t *testing.T) {
+	h := newHarness(t, nil)
+	h.add(t, "a", M{"note": "主力", "enabled": false, "login_via": "wechat"})
+	h.add(t, "b", nil)
+	file := h.post(t, "/accounts/export", M{})
+	if file["format"] != exportFormat || len(arr(file["accounts"])) != 2 || !bytes.Contains(mustJSON(file), []byte(fakeToken("a"))) {
+		t.Fatalf("export incomplete: %v", file)
+	}
+	if one := h.post(t, "/accounts/export", M{"uids": []any{"b"}}); len(arr(one["accounts"])) != 1 {
+		t.Fatal("export ignored the selection")
+	}
+	h.post(t, "/accounts/batch", M{"action": "delete", "all": true})
+	file["accounts"] = append(arr(file["accounts"]), M{"token": "not-a-token"}, fakeToken("c"))
+	r := h.post(t, "/accounts/import", file)
+	if num(r["added"]) != 3 || num(r["failed"]) != 1 {
+		t.Fatalf("import result wrong: %v", r)
+	}
+	a := h.app.store.Get("a")
+	if a == nil || yes(a["enabled"]) || a["note"] != "主力" || a["login_via"] != "wechat" || !yes(h.app.store.Get("b")["enabled"]) {
+		t.Fatalf("exported settings not restored: %v", a)
+	}
+	h.post(t, "/accounts/update", M{"uid": "a", "enabled": true})
+	if r = h.post(t, "/accounts/import", file); num(r["updated"]) != 3 || !yes(h.app.store.Get("a")["enabled"]) {
+		t.Fatalf("re-import should update tokens and keep current settings: %v", r)
+	}
+	if resp, _ := h.request(t, "POST", "/accounts/import", M{"format": "other", "accounts": []any{fakeToken("a")}}, false); resp.StatusCode != 400 {
+		t.Fatal("foreign file accepted")
+	}
+}
+func TestPanelCallUsesPromptAndModel(t *testing.T) {
+	var got M
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		jsonResponse(w, 200, M{"choices": []any{M{"message": M{"content": "回答"}}}, "usage": M{"prompt_tokens": 9, "prompt_tokens_details": M{"cached_tokens": 4}, "completion_tokens": 2}})
+	})
+	h.add(t, "a", nil)
+	r := h.post(t, "/accounts/test", M{"uid": "a", "model": "auto", "prompt": "  讲个笑话  ", "max_tokens": 512})
+	msg := obj(arr(got["messages"])[0])
+	if !yes(r["ok"]) || r["reply"] != "回答" || msg["content"] != "讲个笑话" || num(got["max_tokens"]) != 512 || num(obj(r["usage"])["cached"]) != 4 {
+		t.Fatalf("call wrong: result %v, upstream body %v", r, got)
+	}
+	h.post(t, "/accounts/test", M{"uid": "a"})
+	if obj(arr(got["messages"])[0])["content"] != "Hi" || num(got["max_tokens"]) != 16 {
+		t.Fatalf("quick test defaults changed: %v", got)
+	}
+	if r = h.post(t, "/accounts/test", M{"uid": "a", "max_tokens": 99999}); yes(r["ok"]) {
+		t.Fatal("max_tokens limit not enforced")
+	}
+}
+func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+func TestRequestsWithoutSessionRotateAccounts(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]int{}
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[text(jwt(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))["username"])]++
+		mu.Unlock()
+		jsonResponse(w, 200, M{"output": []any{}})
+	})
+	h.add(t, "a", nil)
+	h.add(t, "b", nil)
+	for i := 0; i < 4; i++ {
+		h.request(t, "POST", "/v1/responses", M{"model": "auto", "input": []any{M{"role": "user", "content": fmt.Sprint("question ", i)}}}, true)
+		h.request(t, "POST", "/v1/messages/count_tokens", M{"model": "auto"}, true)
+	}
+	if seen["a"] == 0 || seen["b"] == 0 {
+		t.Fatalf("requests without a session id stuck to one account: %v", seen)
+	}
+	seen = map[string]int{}
+	for i := 0; i < 4; i++ {
+		h.request(t, "POST", "/v1/responses", M{"model": "auto", "input": "same conversation", "prompt_cache_key": "conv-1"}, true)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("same session moved between accounts: %v", seen)
+	}
+}
 func TestBatchAtomicValidationAndPersistence(t *testing.T) {
 	h := newHarness(t, nil)
 	h.add(t, "a", M{"restricted": true, "restricted_reason": "restricted"})
@@ -530,7 +627,7 @@ func TestManagementPagesAndNoSecretLeaks(t *testing.T) {
 			t.Fatalf("%s served: HTTP %d", path, resp.StatusCode)
 		}
 	}
-	for _, path := range []string{"/", "/assets/app.css", "/assets/app2.css", "/assets/ui.js", "/assets/accounts.js", "/assets/drawer.js", "/assets/add.js", "/assets/manage.js", "/assets/pages.js", "/accounts", "/settings", "/keys", "/proxy-pool", "/stats", "/credit-rate", "/announcements", "/catalog", "/prices"} {
+	for _, path := range []string{"/", "/assets/app.css", "/assets/app2.css", "/assets/ui.js", "/assets/accounts.js", "/assets/drawer.js", "/assets/add.js", "/assets/manage.js", "/assets/tools.js", "/assets/pages.js", "/accounts", "/settings", "/keys", "/proxy-pool", "/stats", "/credit-rate", "/announcements", "/catalog", "/prices"} {
 		resp, b := h.request(t, "GET", path, nil, false)
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s HTTP %d: %s", path, resp.StatusCode, b)
