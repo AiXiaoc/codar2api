@@ -1,6 +1,10 @@
 /* 第二部分：提示框、统计、模型、Key、代理池、设置、抽屉、弹窗、手机布局 */
 .notice{padding:10px 12px;border:2px solid var(--ink);border-radius:var(--r-sm);background:var(--paper2);font-size:13px;overflow-wrap:anywhere}
 .notice.ok{background:var(--green-soft)}.notice.bad{background:var(--red-soft)}.notice.info{background:var(--blue-soft)}.notice+.notice{margin-top:8px}
+.brand-group{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;min-width:0;justify-self:start}
+.brand-update{display:inline-flex;align-items:center;gap:5px;flex:none;padding:4px 9px;border:2px solid var(--ink);border-radius:999px;background:var(--pink-soft);color:var(--pink-deep);box-shadow:var(--sh-sm);font-size:11px;font-weight:800;white-space:nowrap;transition:transform .12s,box-shadow .12s}
+.brand-update:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 var(--ink)}
+.brand-update-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
 .spin{display:inline-block;width:14px;height:14px;margin-right:6px;border:2.5px solid var(--soft);border-top-color:var(--ink);border-radius:50%;vertical-align:-2px;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .hint{margin:0;color:var(--muted);font-size:12px}
@@ -47,6 +51,7 @@ details.more{margin-top:14px}details.more summary{cursor:pointer;font-size:13px;
 .settings-nav button:hover{background:var(--soft)}.settings-nav button[aria-selected="true"]{background:var(--yellow);border-color:var(--ink);box-shadow:var(--sh-sm)}
 .settings-content{min-width:0}.set-text .text-in{flex:0 1 320px;width:320px;min-width:0}.admin-key{margin-top:22px;padding-top:18px;border-top:2px dashed var(--soft)}.admin-key h3{font-size:15px}.admin-key p{margin:5px 0 12px}
 .pw{display:flex;flex-wrap:wrap;gap:10px}.pw .field{flex:1;min-width:200px}
+.about-actions{margin:18px 0}.about-actions a{text-decoration:none}#aboutCheckedAt{margin:10px 0 0}
 /* 抽屉 */
 .scrim{position:fixed;inset:0;z-index:40;background:rgba(42,38,34,.35)}
 .drawer{position:fixed;top:14px;right:14px;bottom:14px;z-index:41;display:flex;flex-direction:column;width:min(560px,calc(100vw - 28px));overflow:hidden;border:var(--bw) solid var(--ink);border-radius:20px;background:var(--paper);box-shadow:var(--sh-lg);animation:slide .22s ease}

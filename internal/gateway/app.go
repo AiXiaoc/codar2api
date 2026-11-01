@@ -20,7 +20,7 @@ import (
 //go:embed web/* defaults.json
 var assets embed.FS
 
-var Version = "0.1.2"
+var Version = "0.1.3"
 
 type Config struct {
 	Addr, DataDir, Password, APIBase, PayBase, WebBase, CheckURL, LocalConfig string
@@ -90,6 +90,7 @@ type App struct {
 	qr            map[string]M
 	priceDefaults M
 	diagnostics   *requestDiagnosticLog
+	updates       *releaseChecker
 }
 
 func New(cfg Config) (*App, string, error) {
@@ -111,7 +112,7 @@ func New(cfg Config) (*App, string, error) {
 		return nil, "", e
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &App{cfg: cfg, store: store, auth: auth, proxies: proxies, usage: usage, ctx: ctx, cancel: cancel, gates: make(chan struct{}, cfg.MaxConcurrent), ann: M{"items": []any{}}, rate: M{}, flows: map[string]M{}, qr: map[string]M{}}
+	a := &App{cfg: cfg, store: store, auth: auth, proxies: proxies, usage: usage, ctx: ctx, cancel: cancel, gates: make(chan struct{}, cfg.MaxConcurrent), ann: M{"items": []any{}}, rate: M{}, flows: map[string]M{}, qr: map[string]M{}, updates: newReleaseChecker()}
 	if cfg.RequestDiagnostics {
 		a.diagnostics = &requestDiagnosticLog{path: filepath.Join(cfg.DataDir, "request-diagnostics.jsonl")}
 		log.Printf("request diagnostics enabled: %s", a.diagnostics.path)

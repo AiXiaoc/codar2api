@@ -9,7 +9,10 @@
 </head>
 <body>
 <header class="top">
-  <button type="button" class="brand" data-tab="accounts">Codar2API</button>
+  <div class="brand-group">
+    <button type="button" class="brand" data-tab="accounts">Codar2API</button>
+    <button type="button" class="brand-update" id="brandUpdate" aria-label="有新版本，查看更新详情" hidden><span class="brand-update-dot" aria-hidden="true"></span>有新版本</button>
+  </div>
   <nav class="nav" role="tablist" aria-label="页面"><button type="button" role="tab" data-tab="accounts" data-ic="users">账号</button><button type="button" role="tab" data-tab="stats" data-ic="chart">统计</button><button type="button" role="tab" data-tab="models" data-ic="cube">模型</button><button type="button" role="tab" data-tab="keys" data-ic="key">API Key</button><button type="button" role="tab" data-tab="proxies" data-ic="globe">代理池</button><button type="button" role="tab" data-tab="settings" data-ic="gear">设置</button><a class="gh" href="https://github.com/AiXiaoc/codar2api" target="_blank" rel="noopener noreferrer" title="GitHub 仓库" aria-label="GitHub 仓库（新窗口打开）"><svg class="ic gh-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a></nav>
   <span></span>
 </header>
@@ -68,6 +71,7 @@
         <button type="button" role="tab" id="settings-tab-tasks" data-settings-tab="tasks" aria-controls="settings-panel-tasks" aria-selected="false" tabindex="-1" data-ic="cal">自动任务</button>
         <button type="button" role="tab" id="settings-tab-prices" data-settings-tab="prices" aria-controls="settings-panel-prices" aria-selected="false" tabindex="-1" data-ic="cube">模型价格</button>
         <button type="button" role="tab" id="settings-tab-remote" data-settings-tab="remote" aria-controls="settings-panel-remote" aria-selected="false" tabindex="-1" data-ic="shield">远程管理</button>
+        <button type="button" role="tab" id="settings-tab-about" data-settings-tab="about" aria-controls="settings-panel-about" aria-selected="false" tabindex="-1" data-ic="info">关于</button>
       </nav>
       <div class="settings-content" id="setGrid">
         <section class="panel" id="settings-panel-relay" role="tabpanel" aria-labelledby="settings-tab-relay" data-settings-panel="relay"><div class="panel-h"><h2>请求转发</h2></div><div class="sets" data-setting-fields="relay"></div></section>
@@ -82,6 +86,17 @@
             <form id="passwordForm" class="pw"><label class="field" data-ic="lock"><input id="currentPassword" type="password" placeholder="当前管理员密钥" aria-label="当前管理员密钥" autocomplete="current-password" required maxlength="1024"></label><label class="field" data-ic="lock"><input id="nextPassword" type="password" placeholder="新管理员密钥，至少 10 位" aria-label="新管理员密钥" autocomplete="new-password" required minlength="10" maxlength="1024"></label><button type="submit" class="btn">修改密钥</button></form>
           </div>
           <div class="row" style="margin-top:14px"><span class="muted small">模型接口使用 API Key</span><span class="grow"></span><button type="button" class="btn danger" id="logout" data-ic="out">退出登录</button></div>
+        </section>
+        <section class="panel" id="settings-panel-about" role="tabpanel" aria-labelledby="settings-tab-about" data-settings-panel="about" hidden>
+          <div class="panel-h"><h2>关于 Codar2API</h2><a class="link" href="https://github.com/AiXiaoc/codar2api" target="_blank" rel="noopener noreferrer">GitHub 仓库</a></div>
+          <p class="muted small">OpenAI / Anthropic 兼容 API 多账号网关</p>
+          <div class="sets">
+            <div class="set"><div class="set-l"><b>当前版本</b></div><span class="chip mono" id="aboutVersion">读取中…</span></div>
+            <div class="set"><div class="set-l"><b>最新正式版</b></div><span class="mono" id="aboutLatest">尚未检测</span></div>
+          </div>
+          <div class="row about-actions"><button type="button" class="btn" id="aboutCheck" data-ic="refresh"><span id="aboutCheckText">检测更新</span></button><a class="btn ghost" id="aboutRelease" href="https://github.com/AiXiaoc/codar2api/releases" target="_blank" rel="noopener noreferrer" hidden>查看新版本</a></div>
+          <div class="notice info" id="aboutStatus" role="status" aria-live="polite" hidden></div>
+          <p class="muted small" id="aboutCheckedAt" hidden></p>
         </section>
       </div>
     </div>
@@ -136,6 +151,7 @@
 <script src="/assets/manage.js"></script>
 <script src="/assets/tools.js"></script>
 <script src="/assets/detail-diff.js"></script>
+<script src="/assets/about.js"></script>
 <script src="/assets/pages.js"></script>
 </body>
 </html>

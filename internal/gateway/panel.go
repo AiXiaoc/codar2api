@@ -20,6 +20,8 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 	force := q.Get("force") == "1"
 	if get {
 		switch path {
+		case "/about":
+			return M{"current_version": Version, "repository_url": projectRepositoryURL, "releases_url": projectRepositoryURL + "/releases"}, 200, nil
 		case "/accounts":
 			rows := []any{}
 			for _, v := range a.store.List() {
@@ -226,6 +228,9 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 	case "/settings":
 		d, e := a.store.SaveSettings(p)
 		return M{"ok": true, "settings": d}, 400, e
+	case "/about/check-update":
+		d, e := a.updates.check(ctx, Version)
+		return d, http.StatusBadGateway, e
 	case "/prices":
 		if e := a.savePrice(p); e != nil {
 			return nil, 400, e

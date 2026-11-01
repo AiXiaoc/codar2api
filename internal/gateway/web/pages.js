@@ -207,9 +207,10 @@ function showSettingsTab(tab){
     b.setAttribute('aria-selected', String(active)); b.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll('[data-settings-panel]').forEach(p => p.hidden = p.dataset.settingsPanel !== tab);
-  $('#settingsActions').hidden = tab === 'prices';
+  $('#settingsActions').hidden = tab === 'prices' || tab === 'about';
   try { localStorage.setItem('codar-settings-tab', tab); } catch(e) {}
   if(tab === 'prices' && SET) loadPrices().catch(err => toast(err.message, true));
+  if(tab === 'about') loadAbout();
 }
 $('#settingsNav').addEventListener('click', e => {
   const b = e.target.closest('[data-settings-tab]'); if(b) showSettingsTab(b.dataset.settingsTab);
@@ -319,6 +320,8 @@ $('#priceAdd').onclick = async () => {
 };
 /* ---- 启动 ---- */
 decorate();
+checkAboutUpdate(true);
+setInterval(() => checkAboutUpdate(true), 21600000);
 loadAnnouncements().catch(() => {});
 setInterval(() => loadAnnouncements().catch(() => {}), 1800000);
 load().catch(err => toast(err.message, true));
