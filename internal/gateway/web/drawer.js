@@ -1,6 +1,7 @@
 'use strict';
 /* 账号详情抽屉：概览、请求记录、签到兑换、活动邀请、用量、代理 */
 const VIA = {wechat: '微信扫码', phone: '手机号验证码', local: '本机客户端登录', token: '粘贴令牌'};
+let SCHED_EDIT = null;
 const kv = rows => '<dl class="kv">' + rows.filter(Boolean).map(r => '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>').join('') + '</dl>';
 function renewCell(a){
   const r = a.renew || {}, auto = SET_CUR.auto_renew_token === false ? '自动续期已关闭' : '剩不到 ' + (SET_CUR.renew_before_hours || 48) + ' 小时自动续期';
@@ -8,9 +9,10 @@ function renewCell(a){
     + (r.count ? '（共 ' + r.count + ' 次）' : '') + '</div>' : '') + '<button type="button" class="btn soft sm" data-act="renew" style="margin-top:6px">' + ic('refresh') + '立即续期</button>';
 }
 const ipNotice = a => '<div class="notice bad" style="margin-bottom:14px"><b>出口 IP 封控</b>（' + esc(exitName(a)) + '）：' + esc(a.proxy.blocked_reason || '上游拒绝了这个 IP')
-  + (a.proxy.blocked_at ? '，' + fmtS(a.proxy.blocked_at) + ' 标记' : '') + '。已停止经这个 IP 调度，用同一出口的账号都受影响。<div style="margin-top:8px"><button type="button" class="btn soft sm" data-act="unblock">解除封控</button></div></div>';
+  + (a.proxy.blocked_at ? '，' + fmtS(a.proxy.blocked_at) + ' 标记' : '') + '。已停止经被封控出口调度。<div style="margin-top:8px"><button type="button" class="btn soft sm" data-act="' + (a.proxy.mode === 'round_robin' ? 'proxy-pool' : 'unblock') + '">' + (a.proxy.mode === 'round_robin' ? '管理代理池' : '解除封控') + '</button></div></div>';
 function dOverview(a){
   const b = a.balance || {}, s = a.sign || {}, st = a.stats || {};
+  const scheduling = SCHED_EDIT && SCHED_EDIT.uid === a.uid ? SCHED_EDIT : a;
   return (a.restricted ? '<div class="notice bad" style="margin-bottom:14px"><b>账号受限</b>：' + esc(a.restricted_reason || '上游返回 account_restricted')
       + (a.restricted_at ? '（' + fmtS(a.restricted_at) + ' 标记）' : '') + '。已停止派发对话请求，手动解除后恢复；上游再次返回受限会重新标记。</div>' : '')
     + (exitBlocked(a) ? ipNotice(a) : '')
@@ -24,6 +26,11 @@ function dOverview(a){
       ['备注', '<input class="in" data-note value="' + esc(a.note) + '" placeholder="写点备注，回车保存" aria-label="备注" maxlength="200">'],
       ['添加方式', esc(VIA[a.login_via] || VIA.token) + ' · ' + fmtS(a.added_at)],
       a.last_error ? ['最近错误', '<span class="bad-t">' + esc(a.last_error) + '</span>' + (a.last_error_at ? ' <span class="muted small">' + fmtS(a.last_error_at) + '</span>' : '')] : null])
+    + '<h3>调度</h3>' + kv([
+      ['当前并发', concurrencyCell(a)],
+      ['权重值', '<input class="in schedule-in" type="number" data-scheduling="weight" min="1" max="10000" step="1" value="' + esc(scheduling.weight ?? 1) + '" aria-label="权重值" required><div class="muted small">仅加权轮询生效，数值越大分配越多，默认 1</div>'],
+      ['最大并发', '<input class="in schedule-in" type="number" data-scheduling="max_concurrency" min="0" max="1000000" step="1" value="' + esc(scheduling.max_concurrency ?? 0) + '" aria-label="账号最大并发数" required><div class="muted small">0 表示无上限，达到上限自动跳过；调低上限不打断正在执行的请求</div>']])
+    + '<button type="button" class="btn soft sm" data-scheduling-save>保存调度配置</button>'
     + '<h3>令牌</h3>' + kv([['剩余', expCell(a)], ['令牌', '<span class="mono small">' + esc(a.token_masked) + '</span>'], ['续期', renewCell(a)]])
     + '<h3>使用</h3><div class="mini3"><div><b>' + nf(st.requests || 0) + '</b><span>请求</span></div><div><b>' + (st.cost_cny ? '≈ ¥' + st.cost_cny : '-') + '</b><span>花费</span></div>'
     + '<div><b>' + (st.last_used ? ago(st.last_used) : '-') + '</b><span title="' + esc(st.last_model || '') + '">' + esc(st.last_model || '最近使用') + '</span></div></div>';
@@ -43,9 +50,10 @@ function fetchRequests(uid, page, force){
 function recItem(x){
   const status = x.status ? ' ' + x.status : '';
   const usage = x.prompt != null || x.completion != null ? '<div class="rec-b">' + tokenLine(x.prompt, x.completion, x.cached) + '</div>' : '';
-  return '<li><div class="rec-h">' + (x.ok ? chip('ok sm', '成功' + status) : chip('bad sm', '失败' + status)) + '<span class="mono">' + esc(x.model || '-') + '</span>'
+  return '<li><div class="rec-h">' + (x.ok ? chip('ok sm', '成功' + status) : chip('bad sm', '失败' + status)) + '<span class="mono">' + requestModelLabel(x) + '</span>'
     + (x.switched ? chip('warn sm', '已换号', '这次失败后网关换了别的账号重试') : '') + (x.source === 'panel' ? chip('sm', '面板测试') : '') + '<span class="when">' + fmtT(x.ts) + '</span></div>'
-    + usage + (!x.ok ? '<div class="rec-e">' + esc(x.error || '未知原因') + '</div>' : '') + '</li>';
+    + usage + (!x.ok ? '<div class="rec-e">' + esc(x.error || '未知原因') + '</div>' : '')
+    + (x.diagnostic_id ? '<button type="button" class="link" data-request-detail="' + esc(x.diagnostic_id) + '">查看详情</button>' : '') + '</li>';
 }
 function dRequests(a){
   fetchRequests(a.uid, (RCACHE[a.uid] || {}).page || 1);
@@ -143,8 +151,8 @@ function dUsage(a){
     + (l.data ? (l.data.ok === false ? fail(l.data) : ledgerView(l.data)) : spinner());
 }
 function dProxy(a){
-  const value = PX.edit && PX.edit.uid === a.uid ? PX.edit.value : ((a.proxy || {}).ids || [])[0] || 0, err = PX.error || (a.proxy || {}).error;
-  return (exitBlocked(a) ? ipNotice(a) : '') + '<h3>出口</h3><p class="hint">对话、签到、刷新和令牌续期都走这里。指定代理不可用时直接报错，不会改走直连。</p>'
+  const value = PX.edit && PX.edit.uid === a.uid ? PX.edit.value : proxyValue(a), err = PX.error || (a.proxy || {}).error;
+  return (exitBlocked(a) ? ipNotice(a) : '') + '<h3>出口</h3><p class="hint">对话、签到、刷新和令牌续期都使用所选代理模式。轮询代理从代理池选择已启用的代理，每次上游请求切换，账号之间也接续轮询。至少需要两条不同代理；公网 IP 是否不同取决于代理的实际出口。代理不可用时直接报错。</p>'
     + '<div class="row" style="margin-top:10px;flex-wrap:nowrap"><label class="field grow"><select id="accountProxy" aria-label="这个账号的出口"' + (!PX.loaded ? ' disabled' : '') + '>' + proxyOptions(value) + '</select></label>'
     + '<button type="button" class="ibtn" data-proxy-action="reload" title="刷新代理池" aria-label="刷新代理池">' + ic('refresh') + '</button></div>'
     + (!PX.loaded ? '<p class="hint">代理池还没读取，刷新后再保存</p>' : !PX.proxies.length ? '<p class="hint">代理池里还没有代理，可以在「代理池」页添加</p>' : '')
@@ -170,13 +178,13 @@ function redrawTab(tab){ if(SEL && DTAB === tab){ const a = ROWS.find(x => x.uid
 let DRAWER_FOCUS = null;
 function openDrawer(uid, tab){
   const a = ROWS.find(x => x.uid === uid); if(!a) return;
-  if(SEL !== uid) DTAB = tab || 'overview';
+  if(SEL !== uid){ DTAB = tab || 'overview'; SCHED_EDIT = null; }
   if(!SEL) DRAWER_FOCUS = document.activeElement;
   SEL = uid; drawDrawer(a); draw();
   $('#scrim').hidden = false; $('#drawer').hidden = false; $('#drawer [data-close]').focus();
 }
 function closeDrawer(){
-  const uid = SEL; SEL = null; $('#scrim').hidden = true; $('#drawer').hidden = true; draw();
+  const uid = SEL; SEL = null; SCHED_EDIT = null; $('#scrim').hidden = true; $('#drawer').hidden = true; draw();
   const back = DRAWER_FOCUS && DRAWER_FOCUS.isConnected ? DRAWER_FOCUS : uid && document.querySelector('#accBody tr[data-uid="' + CSS.escape(uid) + '"] .nm');
   if(back) back.focus();
 }
@@ -184,6 +192,7 @@ $('#scrim').onclick = closeDrawer;
 /* ---- 列表和抽屉里的账号操作 ---- */
 async function act(name, a){
   const uid = a.uid, who = a.username || uid;
+  if(name === 'proxy-pool'){ if(SEL) closeDrawer(); return showTab('proxies'); }
   if(name === 'relogin'){ if(SEL) closeDrawer(); return openAdd(); }
   if(name === 'call') return openCall(a);
   if(name === 'refresh'){ const x = (await api('/accounts/refresh', {uid})).results[0]; toast(x.ok ? '已刷新 ' + who : '刷新失败：' + x.error, !x.ok); }
@@ -220,6 +229,22 @@ async function onAct(e, uid){
 }
 $('#drawer').addEventListener('click', async e => {
   if(e.target.closest('[data-close]')) return closeDrawer();
+  const schedulingSave = e.target.closest('[data-scheduling-save]');
+  if(schedulingSave && SEL){
+    const uid = SEL, body = {uid};
+    const inputs = [...document.querySelectorAll('#drawer [data-scheduling]')];
+    if(inputs.some(input => !input.reportValidity())) return;
+    inputs.forEach(input => body[input.dataset.scheduling] = Number(input.value));
+    schedulingSave.disabled = true;
+    try {
+      const result = await api('/accounts/update', body);
+      if(result.ok === false) throw new Error(result.error);
+      if(SCHED_EDIT && SCHED_EDIT.uid === uid && String(body.weight) === String(SCHED_EDIT.weight) && String(body.max_concurrency) === String(SCHED_EDIT.max_concurrency)) SCHED_EDIT = null;
+      toast('调度配置已保存，立即生效'); await load();
+    } catch(err){ toast(err.message, true); }
+    finally { schedulingSave.disabled = false; }
+    return;
+  }
   const cp = e.target.closest('[data-copy]');
   if(cp){ (await copyText(cp.dataset.copy)) ? toast('已复制') : toast(cp.dataset.copy); return; }
   const t = e.target.closest('[data-dtab]');
@@ -236,14 +261,20 @@ $('#drawer').addEventListener('click', async e => {
   const lp = e.target.closest('[data-lpage]'); if(lp){ fetchLedger(SEL, +lp.dataset.lpage); return redrawTab('usage'); }
   if(SEL) onAct(e, SEL);
 });
+$('#drawer').addEventListener('input', e => {
+  if(!e.target.matches('[data-scheduling]') || !SEL) return;
+  SCHED_EDIT = {uid: SEL};
+  document.querySelectorAll('#drawer [data-scheduling]').forEach(input => SCHED_EDIT[input.dataset.scheduling] = input.value);
+});
 $('#drawer').addEventListener('change', async e => {
-  if(e.target.id === 'accountProxy'){ PX.edit = {uid: SEL, value: Number(e.target.value)}; return; }
+  if(e.target.id === 'accountProxy'){ PX.edit = {uid: SEL, value: e.target.value === 'round_robin' ? 'round_robin' : Number(e.target.value)}; return; }
   const inp = e.target.closest('[data-note]'); if(!inp || !SEL) return;
   try { await api('/accounts/update', {uid: SEL, note: inp.value}); inp.blur(); toast('备注已保存'); load().catch(() => {}); } catch(err){ toast(err.message, true); }
 });
 $('#drawer').addEventListener('keydown', e => {
   if(e.key === 'Enter' && e.target.id === 'rdCode'){ e.preventDefault(); $('#drawer [data-act="redeem"]').click(); }
   if(e.key === 'Enter' && e.target.hasAttribute('data-note')) e.target.blur();
+  if(e.key === 'Enter' && e.target.hasAttribute('data-scheduling')){ e.preventDefault(); $('#drawer [data-scheduling-save]').click(); }
 });
 /* 代理选择：抽屉里单个账号保存，或弹窗里应用到全部账号 */
 document.addEventListener('click', async e => {
@@ -253,7 +284,7 @@ document.addEventListener('click', async e => {
   try {
     if(action === 'reload'){ await loadProxyPool(); redrawTab('proxy'); toast('已刷新代理池'); }
     else {
-      const all = action === 'save-all', r = await api('/accounts/proxy', {all, uid: SEL, proxy_id: Number($(all ? '#allProxy' : '#accountProxy').value)});
+      const all = action === 'save-all', r = await api('/accounts/proxy', {all, uid: SEL, ...proxySelection($(all ? '#allProxy' : '#accountProxy').value)});
       PX.edit = null;
       if(all) closeModal('#proxyModal');
       toast('已更新 ' + r.updated + ' 个账号的出口'); await load();

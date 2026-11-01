@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,11 +29,12 @@ func TestModelUserAgentForwarding(t *testing.T) {
 		name  string
 		patch M
 		want  string
+		panel string
 	}{
-		{"default", M{}, defaultCodarUA},
-		{"edited", M{"codar_ua": "Codar-Custom/1.0"}, "Codar-Custom/1.0"},
-		{"disabled", M{"use_codar_ua": false}, "Go-http-client/1.1"},
-		{"reenabled", M{"use_codar_ua": true}, "Codar-Custom/1.0"},
+		{"default", M{}, defaultCodarUA, defaultCodarUA},
+		{"edited", M{"codar_ua": "Codar-Custom/1.0"}, "Codar-Custom/1.0", "Codar-Custom/1.0"},
+		{"disabled", M{"use_codar_ua": false}, "Incoming-SDK/9.9", "Go-http-client/1.1"},
+		{"reset", M{"use_codar_ua": true, "codar_ua": defaultCodarUA}, defaultCodarUA, defaultCodarUA},
 	} {
 		h.post(t, "/settings", mode.patch)
 		for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/messages/count_tokens"} {
@@ -55,13 +57,9 @@ func TestModelUserAgentForwarding(t *testing.T) {
 				}
 			}
 		}
-		want := mode.want
-		if mode.name == "disabled" {
-			want = "node"
-		}
 		h.post(t, "/accounts/test", M{"uid": "a", "model": "auto"})
-		if got := <-seen; got != want {
-			t.Fatalf("%s panel call: UA %q, want %q", mode.name, got, want)
+		if got := <-seen; got != mode.panel {
+			t.Fatalf("%s panel call: UA %q, want %q", mode.name, got, mode.panel)
 		}
 	}
 }
@@ -74,18 +72,18 @@ func TestModelUserAgentCatalogAndAccountScope(t *testing.T) {
 	}))
 	defer sink.Close()
 	h := newHarness(t, nil)
-	for _, enabled := range []bool{true, false} {
-		h.post(t, "/settings", M{"use_codar_ua": enabled, "codar_ua": "Codar-Custom/2.0"})
+	for _, ua := range []string{defaultCodarUA, "Codar-Custom/2.0"} {
+		h.post(t, "/settings", M{"codar_ua": ua})
 		for _, path := range []string{"/v1/codar/models", "/api/user/self", "/v1/daily-sign/status"} {
 			if _, err := h.app.requestJSON(context.Background(), "GET", sink.URL+path, nil, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			want := "node"
-			if enabled && path == "/v1/codar/models" {
-				want = "Codar-Custom/2.0"
+			if path == "/v1/codar/models" {
+				want = ua
 			}
 			if got := <-seen; got != want {
-				t.Fatalf("enabled=%v %s: UA %q, want %q", enabled, path, got, want)
+				t.Fatalf("setting=%q %s: UA %q, want %q", ua, path, got, want)
 			}
 		}
 	}
@@ -95,21 +93,55 @@ func TestCodarUserAgentSettingsValidationAndPersistence(t *testing.T) {
 	h := newHarness(t, nil)
 	for _, bad := range []any{nil, true, 123, "", "   ", "Codar\r\nX-Injected: yes", "Codar\x00", "Codar\tUA", "中文", strings.Repeat("a", 1025)} {
 		before := h.app.store.Settings()
-		resp, _ := h.request(t, "POST", "/settings", M{"use_codar_ua": false, "codar_ua": bad}, false)
+		resp, _ := h.request(t, "POST", "/settings", M{"codar_ua": bad}, false)
 		if resp.StatusCode != 400 {
 			t.Fatalf("accepted invalid UA %q: HTTP %d", bad, resp.StatusCode)
 		}
 		after := h.app.store.Settings()
-		if before["codar_ua"] != after["codar_ua"] || before["use_codar_ua"] != after["use_codar_ua"] {
+		if before["codar_ua"] != after["codar_ua"] {
 			t.Fatal("rejected settings changed active values")
 		}
 	}
-	h.post(t, "/settings", M{"use_codar_ua": false, "codar_ua": "  Custom-Codar/3.0  "})
+	h.post(t, "/settings", M{"codar_ua": "  Custom-Codar/3.0  "})
 	s, err := NewStore(h.app.cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Settings(); got["codar_ua"] != "Custom-Codar/3.0" || yes(got["use_codar_ua"]) {
+	if got := s.Settings(); got["codar_ua"] != "Custom-Codar/3.0" {
 		t.Fatalf("settings did not survive reload: %v", got)
+	}
+}
+
+func TestLegacyUserAgentSettingsMigration(t *testing.T) {
+	oldDefault := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) codar-desktop/0.3.2 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
+	for _, ua := range []string{oldDefault, "My-Codar/4.0"} {
+		dir := t.TempDir()
+		if err := writeJSON(filepath.Join(dir, "settings.json"), M{"use_codar_ua": false, "codar_ua": ua}); err != nil {
+			t.Fatal(err)
+		}
+		s, err := NewStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ua
+		if ua == oldDefault {
+			want = "codar-desktop/0.3.3"
+		}
+		if got := s.Settings()["codar_ua"]; got != want {
+			t.Fatalf("migrated UA %q, want %q", got, want)
+		}
+		if s.Settings()["use_codar_ua"] != false || modelUserAgent(s.Settings(), "Caller/1.0") != "Caller/1.0" {
+			t.Fatal("saved UA switch was not respected")
+		}
+		if _, err := s.SaveSettings(M{}); err != nil {
+			t.Fatal(err)
+		}
+		var saved M
+		if err := readJSON(filepath.Join(dir, "settings.json"), &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved["use_codar_ua"] != false || saved["codar_ua"] != want {
+			t.Fatal("migrated settings did not persist")
+		}
 	}
 }

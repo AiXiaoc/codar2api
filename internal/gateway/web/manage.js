@@ -88,7 +88,10 @@ $('#keysBody').onclick = async e => {
 /* 代理池 */
 async function loadProxies(){
   const d = await api('/proxy-pool'), direct = d.direct || {}; MANAGED_PROXIES = d.proxies;
-  const used = id => { const n = ROWS.filter(a => exitID(a) === id).length; return '<div class="l-meta">' + (n ? n + ' 个账号在用' : '没有账号在用') + '</div>'; };
+  const used = id => {
+    const n = ROWS.filter(a => exitID(a) === id).length, rotating = id > 0 && d.proxies.some(p => p.id === id && p.enabled) ? ROWS.filter(a => (a.proxy || {}).mode === 'round_robin').length : 0;
+    return '<div class="l-meta">' + ([n && n + ' 个账号固定使用', rotating && rotating + ' 个账号轮询使用'].filter(Boolean).join(' · ') || '没有账号在用') + '</div>';
+  };
   /* 封控是上游对出口 IP 的拦截，和连接检测是两回事：封控优先显示 */
   const blocked = (p, id) => p.blocked ? '<div class="l-use"><span class="bad-t small" style="overflow-wrap:anywhere">' + esc(p.blocked_reason || '上游拒绝了这个 IP') + '</span><div class="muted">' + ago(p.blocked_at) + '封控</div></div>' : '';
   const unblockBtn = (p, id) => p.blocked ? '<button type="button" class="btn soft sm" data-pool-action="unblock" data-id="' + id + '">解除封控</button>' : '';

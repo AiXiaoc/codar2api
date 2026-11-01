@@ -110,7 +110,7 @@ func (a *App) route(account M, pinned *Route) (Route, error) {
 				}
 			}
 		}
-		return a.proxies.Account(uid)
+		return a.proxies.Account(uid, yes(a.store.Settings()["ip_block"]))
 	}
 	return a.proxies.Pin(0)
 }
@@ -135,12 +135,14 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 		return nil, e
 	}
 	var data io.Reader
+	var requestBytes []byte
 	if body != nil {
 		b, e := json.Marshal(body)
 		if e != nil {
 			return nil, e
 		}
 		data = bytes.NewReader(b)
+		requestBytes = b
 	}
 	req, e := http.NewRequestWithContext(ctx, method, endpoint, data)
 	if e != nil {
@@ -150,17 +152,31 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "node")
 	if chat || u != nil && u.Path == "/v1/codar/models" {
-		req.Header.Set("User-Agent", modelUserAgent(a.store.Settings(), "node"))
+		req.Header.Set("User-Agent", modelUserAgent(a.store.Settings()))
 	}
 	if account != nil && text(account["token"]) != "" {
 		req.Header.Set("Authorization", "Bearer "+text(account["token"]))
 	}
+	detail := detailFor(ctx)
+	var attempt *detailAttempt
+	if detail != nil && chat {
+		attempt = detail.startAttempt(req, requestBytes)
+	}
 	resp, e := a.proxies.Do(req, route)
 	if e != nil {
+		if detail != nil && chat {
+			detail.errorAttempt(attempt, e)
+		}
 		return nil, &UpstreamError{Status: 0, Message: e.Error()}
+	}
+	if detail != nil && chat {
+		detail.responseAttempt(attempt, resp)
 	}
 	defer resp.Body.Close()
 	raw, e := io.ReadAll(io.LimitReader(resp.Body, 4<<20+1))
+	if detail != nil && chat && e == nil && len(raw) > 4<<20 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
 	if e != nil {
 		return nil, &UpstreamError{Status: 502, Message: "读取上游响应失败"}
 	}
@@ -286,15 +302,17 @@ func (a *App) importToken(ctx context.Context, token, note, via string, pinned *
 	normalizeAccount(candidate)
 	// Reuse an existing account's configured exit for import follow-up operations.
 	route := pinned
-	if route == nil {
-		r, e := a.proxies.Account(uid)
-		if e != nil {
+	if pinned != nil || !a.proxies.Rotating(uid) {
+		if route == nil {
+			r, e := a.proxies.Account(uid)
+			if e != nil {
+				return nil, e
+			}
+			route = &r
+		}
+		if e = a.proxies.Bind([]string{uid}, *route); e != nil {
 			return nil, e
 		}
-		route = &r
-	}
-	if e = a.proxies.Bind([]string{uid}, *route); e != nil {
-		return nil, e
 	}
 	a.refreshAt(ctx, candidate, []string{"balance", "free", "mine", "invite", "sign"}, route)
 	a.autoActionsAt(ctx, candidate, route)

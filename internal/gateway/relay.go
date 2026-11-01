@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -98,23 +99,23 @@ func (a *App) noteFailure(account M, status int, body []byte) {
 }
 func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) {
 	t0 := time.Now()
-	model := strings.TrimSpace(text(p["model"]))
+	requestedModel := text(p["model"])
+	model := strings.TrimSpace(requestedModel)
 	if model == "" {
 		apiError(w, 400, "请指定 model")
 		return
 	}
 	settings := a.store.Settings()
-	if r.URL.Path == "/v1/chat/completions" && yes(settings["dsh_identity_rewrite"]) {
-		normalizeHarnessIdentity(p)
-	}
+	passthrough := yes(settings["auto_passthrough"])
+	bodyChanged := transformIdentityPrompts(r.URL.Path, p, yes(settings["dsh_identity_rewrite"]), yes(settings["identity_first_line_fill"]))
 	isStream := yes(p["stream"])
-	if r.URL.Path == "/v1/chat/completions" && isStream {
+	if !passthrough && r.URL.Path == "/v1/chat/completions" && isStream {
 		opts := obj(p["stream_options"])
 		opts["include_usage"] = true
 		p["stream_options"] = opts
 	}
-	raw, _ := json.Marshal(p)
-	row := M{"path": r.URL.Path, "model": model, "stream": isStream, "source": "api", "attempts": 0}
+	raw := forwardedBody(r, p, passthrough, bodyChanged)
+	row := M{"path": r.URL.Path, "model": model, "requested_model": requestedModel, "stream": isStream, "source": "api", "attempts": 0}
 	if explicit != nil {
 		row["source"] = "panel"
 	}
@@ -125,7 +126,14 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 	// account's request records show its own failure, not only the final result.
 	tries, switched, pending := []any{}, false, false
 	failTry := func(status int, msg string) {
-		tries = append(tries, M{"uid": chosen["uid"], "account": chosen["username"], "status": status, "ok": false, "error": safeMessage(msg)})
+		if detail := detailFor(r.Context()); detail != nil {
+			detail.failed = true
+		}
+		try := M{"uid": chosen["uid"], "account": chosen["username"], "status": status, "ok": false, "error": safeMessage(msg)}
+		if model, ok := row["response_model"].(string); ok {
+			try["response_model"] = model
+		}
+		tries = append(tries, try)
 		switched, pending = true, false
 	}
 	defer func() {
@@ -141,7 +149,15 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			row["tries"] = tries
 		}
 		if counted {
+			if detail := detailFor(r.Context()); detail != nil && detail.finish(row) {
+				row["diagnostic_id"] = detail.id
+			}
 			a.usage.Record(row)
+		} else if detail := detailFor(r.Context()); detail != nil {
+			if detail.finish(row) {
+				row["diagnostic_id"] = detail.id
+				a.usage.Record(row)
+			}
 		}
 		if trace := diagnosticFor(r); trace != nil {
 			trace.record("relay_result", row)
@@ -178,20 +194,42 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			lastError += "（有出口 IP 处于封控状态）"
 		}
 	}
+	reservedUID := ""
+	release := func() {
+		if reservedUID != "" {
+			a.store.Release(reservedUID)
+			reservedUID = ""
+		}
+	}
+	defer release()
 	for attempt := 0; attempt < attempts; attempt++ {
+		release()
 		if r.Context().Err() != nil {
 			row["error"] = "客户端已取消请求"
 			row["client_aborted"] = true
 			return
 		}
-		next := a.store.Pick(model, hint, tried, skip)
+		var next M
+		var pickErr error
 		if explicit != nil {
-			next = a.store.Get(text(explicit["uid"]))
+			next, pickErr = a.store.ReserveManual(text(explicit["uid"]), model, skip)
+		} else {
+			next, pickErr = a.store.Pick(model, hint, tried, skip)
 		}
 		if next == nil {
+			if errors.Is(pickErr, errAccountCapacity) && len(tried) == 0 {
+				w.Header().Set("Retry-After", "1")
+				fail(http.StatusTooManyRequests, pickErr.Error())
+				return
+			}
+			if explicit != nil && pickErr != nil {
+				fail(http.StatusForbidden, pickErr.Error())
+				return
+			}
 			break
 		}
 		uid := text(next["uid"])
+		reservedUID = uid
 		tried[uid] = true
 		row["attempts"] = attempt + 1
 		// Recheck the live persisted flag immediately before every upstream dispatch.
@@ -199,7 +237,7 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		if current == nil {
 			continue
 		}
-		if reason := unavailable(current, model, settings); reason != "" {
+		if reason := modelUnavailable(current, model, settings, explicit != nil); reason != "" {
 			lastError = reason
 			if explicit != nil {
 				chosen = current
@@ -209,7 +247,8 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			continue
 		}
 		chosen, pending = current, true
-		route, e := a.proxies.Account(uid)
+		delete(row, "response_model")
+		route, e := a.proxies.Account(uid, ipBlock)
 		if e != nil {
 			lastError = e.Error()
 			if explicit != nil {
@@ -220,32 +259,54 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			continue
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-		req, e := http.NewRequestWithContext(ctx, "POST", a.cfg.APIBase+r.URL.Path, bytes.NewReader(raw))
+		target := a.cfg.APIBase + r.URL.Path
+		if passthrough {
+			if query := forwardedQuery(r.URL.RawQuery); query != "" {
+				target += "?" + query
+			}
+		}
+		req, e := http.NewRequestWithContext(ctx, "POST", target, bytes.NewReader(raw))
 		if e != nil {
 			cancel()
 			fail(500, "上游地址配置无效")
 			return
 		}
+		if passthrough {
+			copyForwardedHeaders(req.Header, r.Header)
+		}
 		req.Header.Set("Authorization", "Bearer "+text(chosen["token"]))
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", str(req.Header.Get("Content-Type"), "application/json"))
 		req.Header.Set("Accept-Encoding", "identity")
-		req.Header.Set("User-Agent", modelUserAgent(settings, "Go-http-client/1.1"))
-		req.Header.Set("Accept", str(r.Header.Get("Accept"), "*/*"))
-		for _, h := range []string{"anthropic-version", "anthropic-beta"} {
-			if value := r.Header.Get(h); value != "" {
-				req.Header.Set(h, value)
+		req.Header.Set("User-Agent", modelUserAgent(settings, r.UserAgent()))
+		if !passthrough {
+			req.Header.Set("Accept", str(r.Header.Get("Accept"), "*/*"))
+			for _, h := range []string{"anthropic-version", "anthropic-beta"} {
+				if value := r.Header.Get(h); value != "" {
+					req.Header.Set(h, value)
+				}
 			}
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "*/*")
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/messages") && req.Header.Get("anthropic-version") == "" {
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
 		trace := diagnosticFor(r)
+		detail := detailFor(r.Context())
+		var detailAttempt *detailAttempt
+		if detail != nil {
+			detailAttempt = detail.startAttempt(req, raw)
+		}
 		if trace != nil {
 			trace.secrets = append(trace.secrets, text(chosen["token"]))
 			trace.record("upstream_request", M{"attempt": attempt + 1, "account_uid": uid, "api_key_name": key["name"], "url": req.URL.Scheme + "://" + req.URL.Host + req.URL.Path, "headers": diagnosticHeaders(req.Header), "body": p, "json_bytes": len(raw), "json_sha256": digest(string(raw)), "route_id": route.ID})
 		}
 		resp, e := a.proxies.Do(req, route)
 		if e != nil {
+			if detail != nil {
+				detail.errorAttempt(detailAttempt, e)
+			}
 			if trace != nil {
 				trace.record("upstream_network_error", M{"attempt": attempt + 1, "error": e.Error()})
 			}
@@ -261,11 +322,17 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			failTry(0, lastError)
 			continue
 		}
+		if detail != nil {
+			detail.responseAttempt(detailAttempt, resp)
+		}
 		if trace != nil {
 			trace.record("upstream_response", M{"attempt": attempt + 1, "status": resp.StatusCode, "headers": diagnosticHeaders(resp.Header)})
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, e := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
+			if detail != nil && e == nil && len(body) > 1<<20 {
+				_, _ = io.Copy(io.Discard, resp.Body)
+			}
 			resp.Body.Close()
 			cancel()
 			if trace != nil {
@@ -280,6 +347,9 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			lastBody, lastStatus, lastType = body, resp.StatusCode, str(resp.Header.Get("Content-Type"), "application/json")
 			var d M
 			_ = json.Unmarshal(body, &d)
+			if model, ok := responseModel(d); ok {
+				row["response_model"] = model
+			}
 			lastError = errorText(d)
 			if reason := ipBlocked(lastStatus, body, resp.Header.Get("Server")); reason != "" {
 				lastError = ipBlockedMessage(route, reason)
@@ -399,6 +469,9 @@ func (a *App) pipe(w http.ResponseWriter, r *http.Request, account M, resp *http
 		}
 	} else {
 		body, e := io.ReadAll(io.LimitReader(resp.Body, 32<<20+1))
+		if detail := detailFor(r.Context()); detail != nil && e == nil && len(body) > 32<<20 {
+			_, _ = io.Copy(io.Discard, resp.Body)
+		}
 		if e != nil || len(body) > 32<<20 {
 			row["ok"] = false
 			row["status"] = 502
@@ -419,6 +492,9 @@ func (a *App) pipe(w http.ResponseWriter, r *http.Request, account M, resp *http
 			row["client_aborted"] = true
 			row["error"] = "客户端已断开"
 		}
+	}
+	if tap.hasModel {
+		row["response_model"] = tap.model
 	}
 	if tap.err != "" {
 		row["ok"] = false
@@ -468,17 +544,33 @@ func (a *App) testAccount(ctx context.Context, account M, model, prompt string, 
 			model = "auto"
 		}
 	}
-	if reason := unavailable(account, model, a.store.Settings()); reason != "" {
-		return M{"ok": false, "error": reason, "model": model}
+	var skip func(string) bool
+	if yes(a.store.Settings()["ip_block"]) {
+		skip = a.proxies.ExitBlocked
 	}
+	requestedAccount := account
+	account, err := a.store.ReserveManual(text(account["uid"]), model, skip)
+	if err != nil {
+		if detail := detailFor(ctx); detail != nil {
+			detail.pendingRow = M{"path": "/v1/chat/completions", "source": "panel", "model": model, "uid": requestedAccount["uid"], "account": requestedAccount["username"], "status": 403, "ok": false, "error": err.Error()}
+		}
+		return M{"ok": false, "error": err.Error(), "model": model}
+	}
+	defer a.store.Release(text(account["uid"]))
 	t := time.Now()
 	d, e := a.requestJSONWithin(ctx, 3*time.Minute, "POST", a.cfg.APIBase+"/v1/chat/completions", account, nil, M{"model": model, "messages": []any{M{"role": "user", "content": prompt}}, "max_tokens": maxTokens, "stream": false})
-	row := M{"path": "/v1/chat/completions", "source": "panel", "model": model, "uid": account["uid"], "account": account["username"], "stream": false, "ms": time.Since(t).Milliseconds(), "status": 200, "ok": e == nil}
+	row := M{"path": "/v1/chat/completions", "source": "panel", "model": model, "requested_model": model, "uid": account["uid"], "account": account["username"], "stream": false, "ms": time.Since(t).Milliseconds(), "status": 200, "ok": e == nil}
 	result := M{"ok": e == nil, "model": model, "elapsed_ms": row["ms"]}
 	if e != nil {
 		result["error"] = safeMessage(e.Error())
 		row["error"] = result["error"]
 		row["status"] = statusOf(e)
+		var upstream *UpstreamError
+		if errors.As(e, &upstream) {
+			if returned, ok := responseModel(upstream.Body); ok {
+				row["response_model"] = returned
+			}
+		}
 	} else {
 		reply := ""
 		for _, v := range arr(d["choices"]) {
@@ -492,12 +584,19 @@ func (a *App) testAccount(ctx context.Context, account M, model, prompt string, 
 		result["reply"] = reply
 		tap := newTap(nil)
 		tap.inspect(d)
+		if tap.hasModel {
+			row["response_model"] = tap.model
+		}
 		usage := normalizeUsage(tap.raw)
 		for k, v := range usage {
 			row[k] = v
 		}
 		result["usage"] = usage
 	}
-	a.usage.Record(row)
+	if detail := detailFor(ctx); detail != nil {
+		detail.pendingRow = row
+	} else {
+		a.usage.Record(row)
+	}
 	return result
 }

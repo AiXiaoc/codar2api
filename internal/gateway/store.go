@@ -148,10 +148,21 @@ type settingSpec struct {
 	Help    string `json:"help"`
 }
 
+var schedulingOptions = []M{
+	{"value": "round_robin", "label": "轮询"},
+	{"value": "weighted_round_robin", "label": "加权轮询"},
+	{"value": "sticky", "label": "粘性"},
+	{"value": "least_connections", "label": "最小连接"},
+}
+
 var schema = []settingSpec{
-	{"use_codar_ua", "bool", true, nil, nil, "使用 Codar UA", "模型请求转发前统一替换 User-Agent，保存后立即生效。"},
-	{"codar_ua", "string", defaultCodarUA, nil, 1024, "Codar UA", "默认取自 Codar 桌面端 HAR，可编辑；关闭开关后保留此值。"},
-	{"dsh_identity_rewrite", "bool", true, nil, nil, "DSH身份提示词替换", "替换 DeepSeek Harness 开发者或系统消息开头的固定身份描述，保留其余内容。"},
+	{"use_codar_ua", "bool", true, nil, nil, "启用自定义 UA", "关闭后 API 请求沿用调用方 UA，面板测试和模型目录使用 Go HTTP 客户端 UA。"},
+	{"codar_ua", "string", defaultCodarUA, nil, 1024, "自定义 UA", "开启后模型请求、模型目录和面板测试使用右侧 UA；关闭后 API 沿用调用方 UA。"},
+	{"auto_passthrough", "bool", true, nil, nil, "自动透传", "保留原始正文、查询参数和普通请求头，仍按启用的 UA 和提示词规则处理；不转发本地鉴权、Cookie 和连接控制头。"},
+	{"detailed_debug", "bool", false, nil, nil, "启用详细调试日志", "记录失败请求的完整请求头、请求体和响应，包含 API Key、账号令牌等敏感信息；仅管理员可查看。"},
+	{"allow_remote_management", "bool", true, nil, nil, "允许远程访问", "开启后允许从其他主机访问管理页面和管理接口，仍需管理员密钥；关闭后仅允许本机管理，API Key 调用不受影响。"},
+	{"dsh_identity_rewrite", "bool", true, nil, nil, "DSH身份提示词替换", "替换各模型接口系统或开发者提示词开头的固定身份描述，保留其余内容。"},
+	{"identity_first_line_fill", "bool", false, nil, nil, "身份提示词首行填充", "在系统或开发者提示词首行开头添加一个点和一个零宽空格（U+200B）。"},
 	{"auto_claim", "bool", true, nil, nil, "自动领取免费模型活动", "导入与后台检查时自动领取可参加的免费模型活动。"},
 	{"allow_general_balance", "bool", true, nil, nil, "允许使用通用余额", "Agent 余额用完后允许使用通用余额。"},
 	{"auto_renew_token", "bool", true, nil, nil, "令牌自动续期", "令牌接近到期时自动续期。"},
@@ -162,7 +173,7 @@ var schema = []settingSpec{
 	{"cooldown_error_seconds", "int", 30, 0, 3600, "上游错误冷却（秒）", "网络错误或 5xx 时暂停该账号；503「No available channel」直接返回、不冷却。"},
 	{"max_attempts", "int", 3, 1, 10, "单次请求最多尝试账号数", "收到响应前的可重试错误切换到其他可用账号。"},
 	{"ip_block", "bool", true, nil, nil, "IP 封控时停止调度该 IP", "上游返回 403 拦截时把当前出口 IP 标记为封控，不再调度，换其他出口的账号重试。"},
-	{"session_sticky", "bool", true, nil, nil, "会话粘滞", "同一会话尽量使用同一账号。"},
+	{"scheduling_strategy", "select", "round_robin", nil, nil, "调度策略", "轮询依次选号；加权轮询按账号权重分配；粘性优先沿用同一会话账号；最小连接优先使用当前并发最少的账号。所有策略均跳过已达并发上限的账号。"},
 	{"refresh_minutes", "int", 30, 5, 1440, "余额 / 活动刷新间隔（分钟）", "完整刷新账号信息的间隔。"},
 	{"free_check_minutes", "int", 60, 5, 1440, "免费活动检查间隔（分钟）", "检查免费活动与自动领取的间隔。"},
 	{"catalog_ttl_minutes", "int", 10, 1, 1440, "模型目录缓存（分钟）", "后台缓存上游模型目录。"},
@@ -185,6 +196,17 @@ func cleanSettings(p M, base M) (M, error) {
 		if s.Type == "bool" {
 			if _, ok := v.(bool); !ok {
 				return nil, fmt.Errorf("%s 必须是布尔值", s.Key)
+			}
+		} else if s.Type == "select" {
+			valid := false
+			for _, option := range schedulingOptions {
+				if v == option["value"] {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return nil, errors.New("请选择有效的调度策略")
 			}
 		} else if s.Type == "string" {
 			value, ok := v.(string)
@@ -226,14 +248,21 @@ type Store struct {
 	prices    M
 	sticky    map[string]string
 	cursor    int
+	inflight  map[string]int
+	weights   map[string]int64
 	dirty     bool
 }
 
 func NewStore(dir string) (*Store, error) {
+	return newStore(dir, true)
+}
+
+func newStore(dir string, allowRemoteManagement bool) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, accounts: []M{}, settings: defaults(), catalog: []any{}, prices: M{}, sticky: map[string]string{}}
+	s := &Store{dir: dir, accounts: []M{}, settings: defaults(), catalog: []any{}, prices: M{}, sticky: map[string]string{}, inflight: map[string]int{}, weights: map[string]int64{}}
+	s.settings["allow_remote_management"] = allowRemoteManagement
 	if err := loadOptional(filepath.Join(dir, "accounts.json"), &s.accounts); err != nil {
 		return nil, err
 	}
@@ -242,7 +271,17 @@ func NewStore(dir string) (*Store, error) {
 		return nil, err
 	}
 	for k, v := range saved {
+		if k == "session_sticky" {
+			continue
+		}
 		s.settings[k] = v
+	}
+	if _, ok := saved["scheduling_strategy"]; !ok && yes(saved["session_sticky"]) {
+		s.settings["scheduling_strategy"] = "sticky"
+	}
+	const oldDefaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) codar-desktop/0.3.2 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36"
+	if s.settings["codar_ua"] == oldDefaultUA {
+		s.settings["codar_ua"] = defaultCodarUA
 	}
 	var cat M
 	if err := loadOptional(filepath.Join(dir, "catalog.json"), &cat); err != nil {
@@ -268,6 +307,14 @@ func NewStore(dir string) (*Store, error) {
 	return s, nil
 }
 func normalizeAccount(a M) {
+	for _, f := range accountSchedulingSpecs {
+		value, err := schedulingInteger(a[f.key], f.min, f.max)
+		if err != nil {
+			value = f.def
+		}
+		a[f.key] = value
+	}
+	delete(a, "current_concurrency")
 	for _, k := range []string{"balance", "free", "invite", "profile", "stats", "sign", "renew"} {
 		a[k] = obj(a[k])
 	}
@@ -328,6 +375,9 @@ func (s *Store) Update(uid string, fn func(M) error) error {
 				s.accounts[i] = a
 				return e
 			}
+			if num(a["weight"]) != num(b["weight"]) {
+				s.weights = map[string]int64{}
+			}
 			return nil
 		}
 	}
@@ -345,7 +395,7 @@ func (s *Store) Upsert(a M) (bool, error) {
 			n := clone(b)
 			for k, v := range a {
 				switch k {
-				case "enabled", "added_at", "stats", "redeems", "restricted", "restricted_reason", "restricted_at":
+				case "enabled", "added_at", "stats", "redeems", "restricted", "restricted_reason", "restricted_at", "weight", "max_concurrency":
 					continue
 				}
 				n[k] = v
@@ -377,6 +427,11 @@ func (s *Store) SaveSettings(p M) (M, error) {
 	}
 	if e = writeJSON(filepath.Join(s.dir, "settings.json"), d); e != nil {
 		return nil, e
+	}
+	if text(d["scheduling_strategy"]) != text(s.settings["scheduling_strategy"]) {
+		s.cursor = 0
+		s.weights = map[string]int64{}
+		s.sticky = map[string]string{}
 	}
 	s.settings = d
 	return clone(d), nil
@@ -501,6 +556,9 @@ func (s *Store) Batch(p M) (M, error) {
 		return nil, e
 	}
 	if action == "disable" || action == "delete" {
+		for uid := range ids {
+			delete(s.weights, uid)
+		}
 		for h, u := range s.sticky {
 			if ids[u] {
 				delete(s.sticky, h)
@@ -555,11 +613,15 @@ func spendable(a M, allow bool) (float64, bool) {
 	return n, known
 }
 func unavailable(a M, model string, settings M) string {
+	return modelUnavailable(a, model, settings, false)
+}
+
+func modelUnavailable(a M, model string, settings M, manual bool) string {
 	t := now()
 	if yes(a["restricted"]) {
 		return "账号受限，请手动解除受限标记"
 	}
-	if !yes(a["enabled"]) {
+	if !manual && !yes(a["enabled"]) {
 		return "已关闭"
 	}
 	if text(a["token"]) == "" {
@@ -584,50 +646,25 @@ func unavailable(a M, model string, settings M) string {
 	return ""
 }
 
-// Pick chooses the next account for a model request. skip, when set, rejects
-// accounts for reasons the store does not track, such as a blocked exit IP.
-func (s *Store) Pick(model, hint string, exclude map[string]bool, skip func(uid string) bool) M {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	eligible := func(a M) bool {
-		uid := text(a["uid"])
-		return !exclude[uid] && unavailable(a, model, s.settings) == "" && (skip == nil || !skip(uid))
-	}
-	if yes(s.settings["session_sticky"]) && hint != "" {
-		for _, a := range s.accounts {
-			if a["uid"] == s.sticky[hint] && eligible(a) {
-				return clone(a)
-			}
-		}
-	}
-	n := len(s.accounts)
-	for i := 0; i < n; i++ {
-		idx := (s.cursor + i) % n
-		a := s.accounts[idx]
-		if eligible(a) {
-			s.cursor = (idx + 1) % n
-			if hint != "" && yes(s.settings["session_sticky"]) {
-				if len(s.sticky) > 10000 {
-					s.sticky = map[string]string{}
-				}
-				s.sticky[hint] = text(a["uid"])
-			}
-			return clone(a)
-		}
-	}
-	return nil
-}
 func (s *Store) Public(a M, proxy M) M {
 	d := clone(a)
 	delete(d, "token")
 	d["token_masked"] = masked(text(a["token"]))
 	d["token_exp"] = num(jwt(text(a["token"]))["exp"])
 	d["free_models"] = freeModels(a, now())
-	reason := unavailable(a, "", s.Settings())
+	s.mu.RLock()
+	settings := clone(s.settings)
+	current := s.inflight[text(a["uid"])]
+	s.mu.RUnlock()
+	d["current_concurrency"] = current
+	reason := unavailable(a, "", settings)
+	if reason == "" && num(a["max_concurrency"]) > 0 && current >= int(num(a["max_concurrency"])) {
+		reason = "已达账号最大并发数"
+	}
 	d["reason"] = reason
 	d["ready"] = reason == ""
 	block := ""
-	if b, ok := spendable(a, yes(s.Settings()["allow_general_balance"])); ok && b <= 0 {
+	if b, ok := spendable(a, yes(settings["allow_general_balance"])); ok && b <= 0 {
 		block = "余额已用完"
 	}
 	if a["cooldown_kind"] == "balance" && num(a["cooldown_until"]) > now() {

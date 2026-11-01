@@ -60,14 +60,31 @@
   </div>
 
   <div data-page="settings" hidden>
-    <div class="page-head"><h1>设置</h1><div class="head-act"><button type="button" class="btn ghost" id="setReset">恢复默认</button><button type="button" class="btn" id="setSave">保存</button></div></div>
-    <div class="grid2" id="setGrid"></div>
-    <section class="panel"><div class="panel-h"><h2>模型价格</h2>
+    <div class="page-head"><h1>设置</h1><div class="head-act" id="settingsActions"><span class="muted small">开关自动保存，其他选项点保存</span><button type="button" class="btn ghost" id="setReset">恢复本页默认</button><button type="button" class="btn" id="setSave">保存</button></div></div>
+    <div class="settings-layout">
+      <nav class="settings-nav panel plain" id="settingsNav" role="tablist" aria-label="设置菜单" aria-orientation="vertical">
+        <button type="button" role="tab" id="settings-tab-relay" data-settings-tab="relay" aria-controls="settings-panel-relay" aria-selected="true" data-ic="chat">请求转发</button>
+        <button type="button" role="tab" id="settings-tab-routing" data-settings-tab="routing" aria-controls="settings-panel-routing" aria-selected="false" tabindex="-1" data-ic="refresh">调度与换号</button>
+        <button type="button" role="tab" id="settings-tab-tasks" data-settings-tab="tasks" aria-controls="settings-panel-tasks" aria-selected="false" tabindex="-1" data-ic="cal">自动任务</button>
+        <button type="button" role="tab" id="settings-tab-prices" data-settings-tab="prices" aria-controls="settings-panel-prices" aria-selected="false" tabindex="-1" data-ic="cube">模型价格</button>
+        <button type="button" role="tab" id="settings-tab-remote" data-settings-tab="remote" aria-controls="settings-panel-remote" aria-selected="false" tabindex="-1" data-ic="shield">远程管理</button>
+      </nav>
+      <div class="settings-content" id="setGrid">
+        <section class="panel" id="settings-panel-relay" role="tabpanel" aria-labelledby="settings-tab-relay" data-settings-panel="relay"><div class="panel-h"><h2>请求转发</h2></div><div class="sets" data-setting-fields="relay"></div></section>
+        <section class="panel" id="settings-panel-routing" role="tabpanel" aria-labelledby="settings-tab-routing" data-settings-panel="routing" hidden><div class="panel-h"><h2>调度与换号</h2></div><div class="sets" data-setting-fields="routing"></div></section>
+        <section class="panel" id="settings-panel-tasks" role="tabpanel" aria-labelledby="settings-tab-tasks" data-settings-panel="tasks" hidden><div class="panel-h"><h2>自动任务</h2></div><div class="sets" data-setting-fields="tasks"></div></section>
+        <section class="panel" id="settings-panel-prices" role="tabpanel" aria-labelledby="settings-tab-prices" data-settings-panel="prices" hidden><div class="panel-h"><h2>模型价格</h2>
       <div class="panel-act"><span class="muted small">元 / 百万 token</span><label class="field"><input id="priceNew" class="mono" placeholder="添加模型 ID" aria-label="添加模型 ID"></label><button type="button" class="btn soft sm" id="priceAdd">添加</button></div></div>
       <div class="tbl"><table class="t"><thead><tr><th>模型</th><th class="num">输入</th><th class="num">缓存命中</th><th class="num">输出</th><th></th></tr></thead><tbody id="priceBody"></tbody></table></div></section>
-    <section class="panel tape-b"><div class="panel-h"><h2>管理员</h2></div>
-      <form id="passwordForm" class="pw"><label class="field" data-ic="lock"><input id="currentPassword" type="password" placeholder="当前密码" aria-label="当前密码" autocomplete="current-password" required></label><label class="field" data-ic="lock"><input id="nextPassword" type="password" placeholder="新密码，至少 10 位" aria-label="新密码" autocomplete="new-password" required minlength="10" maxlength="1024"></label><button type="submit" class="btn">修改密码</button></form>
-      <div class="row" style="margin-top:14px"><span class="muted small">改密码后需要重新登录，已有 API Key 不受影响</span><span class="grow"></span><button type="button" class="btn danger" id="logout" data-ic="out">退出登录</button></div></section>
+        <section class="panel" id="settings-panel-remote" role="tabpanel" aria-labelledby="settings-tab-remote" data-settings-panel="remote" hidden><div class="panel-h"><h2>远程管理</h2></div>
+          <div class="sets" data-setting-fields="remote"></div>
+          <div class="admin-key"><h3>管理员密钥</h3><p class="muted small">用于登录管理面板，修改后需要重新登录。</p>
+            <form id="passwordForm" class="pw"><label class="field" data-ic="lock"><input id="currentPassword" type="password" placeholder="当前管理员密钥" aria-label="当前管理员密钥" autocomplete="current-password" required maxlength="1024"></label><label class="field" data-ic="lock"><input id="nextPassword" type="password" placeholder="新管理员密钥，至少 10 位" aria-label="新管理员密钥" autocomplete="new-password" required minlength="10" maxlength="1024"></label><button type="submit" class="btn">修改密钥</button></form>
+          </div>
+          <div class="row" style="margin-top:14px"><span class="muted small">模型接口使用 API Key</span><span class="grow"></span><button type="button" class="btn danger" id="logout" data-ic="out">退出登录</button></div>
+        </section>
+      </div>
+    </div>
   </div>
 </main>
 
@@ -108,6 +125,9 @@
     <label class="lbl">提示词<textarea id="callPrompt" class="in prompt" maxlength="8000" aria-label="提示词"></textarea></label>
     <div class="row"><span class="muted small">Ctrl + Enter 发送 · 最多输出 1024 token，经该账号的出口发出</span><span class="grow"></span><button type="submit" class="btn" id="callGo" data-ic="play">发送</button></div></form>
   <div id="callOut"></div></div></div>
+<div class="modal-back" id="requestDetailModal" hidden><div class="modal request-detail-modal" role="dialog" aria-modal="true" aria-labelledby="requestDetailTitle">
+  <div class="modal-h"><h2 id="requestDetailTitle">请求详细记录</h2><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div>
+  <p class="hint">详细记录可能包含完整凭据和对话内容，请妥善保管。</p><div id="requestDetailBody" aria-live="polite"></div></div></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/assets/ui.js"></script>
 <script src="/assets/accounts.js"></script>
@@ -115,6 +135,7 @@
 <script src="/assets/add.js"></script>
 <script src="/assets/manage.js"></script>
 <script src="/assets/tools.js"></script>
+<script src="/assets/detail-diff.js"></script>
 <script src="/assets/pages.js"></script>
 </body>
 </html>

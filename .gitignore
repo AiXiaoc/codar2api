@@ -2,6 +2,8 @@
 /dist/
 /output/
 /.playwright-cli/
+/.claude/
+/docs/superpowers/specs/
 *.exe
 *.test
 .env

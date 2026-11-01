@@ -8,11 +8,14 @@ const NOW = () => Date.now() / 1000;
 const proxyName = a => a.proxy ? a.proxy.name || (a.proxy.mode === 'direct' ? '直连' : '指定代理') : '直连';
 function proxyOptions(value){
   const id = Number(value || 0);
-  return '<option value="0"' + (!id ? ' selected' : '') + '>直连</option>'
+  return '<option value="0"' + (value !== 'round_robin' && !id ? ' selected' : '') + '>直连</option>'
+    + '<option value="round_robin"' + (value === 'round_robin' ? ' selected' : '') + '>轮询代理（每次请求换代理）</option>'
     + PX.proxies.map(p => '<option value="' + p.id + '"' + (id === p.id ? ' selected' : '') + (!p.enabled ? ' disabled' : '') + '>'
       + esc(p.name) + ' · #' + p.id + (!p.enabled ? '（已停用）' : '') + '</option>').join('')
-    + (id && !PX.proxies.some(p => p.id === id) ? '<option value="' + id + '" selected disabled>已删除的代理 #' + id + '</option>' : '');
+    + (Number.isFinite(id) && id && !PX.proxies.some(p => p.id === id) ? '<option value="' + id + '" selected disabled>已删除的代理 #' + id + '</option>' : '');
 }
+const proxyValue = a => (a.proxy || {}).mode === 'round_robin' ? 'round_robin' : ((a.proxy || {}).ids || [])[0] || 0;
+const proxySelection = value => value === 'round_robin' ? {proxy_mode: 'round_robin'} : {proxy_id: Number(value)};
 async function loadProxyPool(){
   try { const d = await api('/proxy-pool'); PX.proxies = d.proxies; PX.loaded = true; PX.error = d.error || ''; }
   catch(err){ PX.error = err.message; throw err; }
@@ -34,7 +37,7 @@ function quotaCell(a, big){
 }
 /* 出口 IP 封控：上游拦截的是 IP，不是账号；设置里关掉「IP 封控时停止调度该 IP」后不再按封控处理 */
 const exitBlocked = a => !!(a.proxy && a.proxy.blocked) && SET_CUR.ip_block !== false;
-const exitID = a => a.proxy && a.proxy.mode === 'pick' ? Number((a.proxy.ids || [])[0]) || 0 : 0;
+const exitID = a => a.proxy && a.proxy.mode === 'round_robin' ? -1 : a.proxy && a.proxy.mode === 'pick' ? Number((a.proxy.ids || [])[0]) || 0 : 0;
 const exitName = a => exitID(a) ? proxyName(a) : '直连';
 /* 账号状态只有「正常」「账号受限」两种；冷却、余额、令牌、出口 IP 等调度条件写在下面一行 */
 function stateCell(a){
@@ -42,7 +45,7 @@ function stateCell(a){
   const main = a.restricted ? chip('bad', '<i class="pt"></i>账号受限', a.restricted_reason || '上游返回 account_restricted')
     : chip('ok', '<i class="pt"></i>正常', a.last_error ? '最近错误：' + a.last_error : '');
   if(a.restricted) nt('<button type="button" class="link" data-act="unrestrict">解除受限</button>');
-  if(exitBlocked(a)) nt('<span class="bad-t" title="' + esc(a.proxy.blocked_reason || '') + '">IP 封控 · ' + esc(exitName(a)) + '</span><button type="button" class="link" data-act="unblock">解除</button>');
+  if(exitBlocked(a)) nt('<span class="bad-t" title="' + esc(a.proxy.blocked_reason || '') + '">IP 封控 · ' + esc(exitName(a)) + '</span><button type="button" class="link" data-act="' + (a.proxy.mode === 'round_robin' ? 'proxy-pool' : 'unblock') + '">' + (a.proxy.mode === 'round_robin' ? '管理代理池' : '解除') + '</button>');
   if(cooling(a)) nt('<span class="warn-t">' + (a.cooldown_kind === 'balance' ? '余额冷却 · 仅免费模型' : esc(a.cooldown_reason || '冷却中')) + '</span><span class="cd" data-cd="' + a.cooldown_until + '">还有 '
     + dur2s(a.cooldown_until - NOW()) + '</span><button type="button" class="link" data-act="reset">立即恢复</button>');
   else if(a.paid_block) nt('<span class="muted" title="收费模型暂停派发，免费模型照常；签到、兑换或充值后下次刷新即恢复">仅免费模型 · ' + esc(a.paid_block) + '</span>');
@@ -56,13 +59,15 @@ function expCell(a){
   if(a.token_exp <= NOW()) return '<b class="bad-t">已过期</b>';
   return '<b' + (a.token_exp - NOW() < 86400 ? ' class="warn-t"' : '') + '>' + dur(a.token_exp - NOW()) + '</b><div class="muted">' + fmtS(a.token_exp) + '</div>';
 }
-const accountSwitch = a => sw(a.enabled, '启用账号 ' + (a.username || a.uid), 'data-act="toggle" title="' + (a.enabled ? '已启用：点击关闭后不再派发请求，也不参与批量和后台任务' : '已关闭：点击启用') + '"');
+const accountSwitch = a => sw(a.enabled, '启用账号 ' + (a.username || a.uid), 'data-act="toggle" title="' + (a.enabled ? '已启用：点击关闭后停止自动调度和后台任务，仍可手动调用和测试' : '已关闭：仍可手动调用和测试，点击启用自动调度') + '"');
+const concurrencyText = a => (a.current_concurrency || 0) + ' / ' + (a.max_concurrency || '∞');
+const concurrencyCell = a => '<span class="mono' + (a.max_concurrency > 0 && a.current_concurrency >= a.max_concurrency ? ' warn-t' : '') + '" data-concurrency-uid="' + esc(a.uid) + '" title="当前并发 / 最大并发，∞ 表示无上限">' + concurrencyText(a) + '</span>';
 function row(a){
-  const px = a.proxy && a.proxy.mode === 'pick' ? '<div class="px' + (a.proxy.available === false ? ' bad-t' : '') + '">' + ic('globe') + esc(proxyName(a)) + '</div>' : '';
+  const px = a.proxy && a.proxy.mode !== 'direct' ? '<div class="px' + (a.proxy.available === false ? ' bad-t' : '') + '">' + ic('globe') + esc(proxyName(a)) + '</div>' : '';
   const picked = SELECTED_ACCOUNTS.has(a.uid), cls = [SEL === a.uid && 'sel', picked && 'checked', !a.enabled && 'is-off'].filter(Boolean).join(' ');
   return '<tr class="' + cls + '" data-uid="' + esc(a.uid) + '"><td class="pick"><label><input type="checkbox" data-select-account="' + esc(a.uid) + '" aria-label="选择账号 ' + esc(a.username || a.uid) + '"'
     + (picked ? ' checked' : '') + (BATCH_BUSY ? ' disabled' : '') + '></label></td>'
-    + '<td><button type="button" class="nm"><b>' + esc(a.username || a.uid) + '</b>' + (a.note ? '<span class="note" title="' + esc(a.note) + '">' + esc(a.note) + '</span>' : '') + '</button>' + px + '</td>'
+    + '<td><button type="button" class="nm"><b>' + esc(a.username || a.uid) + '</b>' + (a.note ? '<span class="note" title="' + esc(a.note) + '">' + esc(a.note) + '</span>' : '') + '</button>' + px + '<div class="muted small">并发 ' + concurrencyCell(a) + '</div></td>'
     + '<td>' + stateCell(a) + '</td><td class="w-q">' + quotaCell(a) + '</td><td class="exp">' + expCell(a) + '</td><td>' + accountSwitch(a) + '</td>'
     + '<td class="row-act"><button type="button" class="ibtn sm" data-act="call" title="' + (a.restricted ? '请先解除受限' : '调用：选模型、写提示词测试') + '" aria-label="调用"' + (a.restricted ? ' disabled' : '') + '>' + ic('chat') + '</button>'
     + '<button type="button" class="ibtn sm" data-act="test" title="' + (a.restricted ? '请先解除受限' : '测试') + '" aria-label="测试"' + (a.restricted ? ' disabled' : '') + '>' + ic('play') + '</button>'
@@ -143,6 +148,21 @@ async function load(){
   draw();
   if(SEL){ const a = ROWS.find(x => x.uid === SEL); a ? drawDrawer(a) : closeDrawer(); }
 }
+let CONCURRENCY_LOADING = false;
+async function loadConcurrency(){
+  if(document.hidden || CONCURRENCY_LOADING || (document.querySelector('[data-page="accounts"]').hidden && !SEL)) return;
+  CONCURRENCY_LOADING = true;
+  try {
+    const d = await api('/accounts/concurrency');
+    const live = new Map((d.accounts || []).map(a => [a.uid, a]));
+    ROWS.forEach(a => { const fresh = live.get(a.uid); if(fresh) Object.assign(a, fresh); });
+    document.querySelectorAll('[data-concurrency-uid]').forEach(el => {
+      const a = live.get(el.dataset.concurrencyUid); if(!a) return;
+      el.textContent = concurrencyText(a);
+      el.classList.toggle('warn-t', a.max_concurrency > 0 && a.current_concurrency >= a.max_concurrency);
+    });
+  } finally { CONCURRENCY_LOADING = false; }
+}
 /* ---- 批量操作 ---- */
 async function batchAccounts(action, all = false){
   if(BATCH_BUSY) return;
@@ -210,11 +230,11 @@ $('#proxyAll').onclick = async () => {
   closeMenu();
   try {
     await loadProxyPool();
-    const first = ((ROWS[0] || {}).proxy || {}).ids || [];
-    const value = ROWS.length && ROWS.every(a => JSON.stringify((a.proxy || {}).ids || []) === JSON.stringify(first)) ? first[0] || 0 : 0;
+    const first = proxyValue(ROWS[0] || {});
+    const value = ROWS.length && ROWS.every(a => proxyValue(a) === first) ? first : 0;
     $('#proxyBody').innerHTML = '<p style="margin:0">应用到全部 <b>' + ROWS.length + '</b> 个账号，包括筛选隐藏和已关闭的账号。</p>'
       + '<label class="field"><select id="allProxy" aria-label="统一使用的出口">' + proxyOptions(value) + '</select></label>'
-      + '<p class="hint">指定代理不可用时直接报错，不会改走直连。</p><button type="button" class="btn block" data-proxy-action="save-all"' + (!ROWS.length ? ' disabled' : '') + '>应用到全部账号</button>';
+      + '<p class="hint">轮询代理使用代理池中已启用的代理，每次上游请求切换，账号之间也接续轮询。至少需要两条不同代理，没有可用出口时直接报错。</p><button type="button" class="btn block" data-proxy-action="save-all"' + (!ROWS.length ? ' disabled' : '') + '>应用到全部账号</button>';
     openModal('#proxyModal', '#allProxy');
   } catch(err){ toast(err.message, true); }
 };

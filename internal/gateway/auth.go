@@ -102,6 +102,34 @@ func (a *Auth) Admin(r *http.Request) bool {
 	}
 	return true
 }
+
+func localManagementRequest(r *http.Request) bool {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(peer)
+	if ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	// A proxy connection does not establish that the original caller is local.
+	for _, h := range []string{"Forwarded", "X-Forwarded-For", "X-Real-IP"} {
+		if len(r.Header.Values(h)) != 0 {
+			return false
+		}
+	}
+	host := r.Host
+	if h, _, e := net.SplitHostPort(host); e == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip = net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func sameOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {

@@ -50,11 +50,13 @@ func parseProxyID(v any) (int, error) {
 }
 
 type ProxyPool struct {
-	mu       sync.Mutex
-	dir      string
-	data     M
-	clients  map[string]*http.Client
-	checkURL string
+	mu           sync.Mutex
+	dir          string
+	data         M
+	clients      map[string]*http.Client
+	checkURL     string
+	rotationNext int
+	rotationLast string
 }
 
 func NewProxyPool(dir, checkURL string) (*ProxyPool, error) {
@@ -121,12 +123,13 @@ func (p *ProxyPool) Pin(id int) (Route, error) {
 	r, _, e := p.pinLocked(id)
 	return r, e
 }
-func (p *ProxyPool) Account(uid string) (Route, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *ProxyPool) accountLocked(uid string, skipBlocked, advance bool) (Route, error) {
 	policy := obj(obj(p.data["accounts"])[uid])
 	if len(policy) == 0 || policy["mode"] == "direct" {
 		return Route{Name: "直连"}, nil
+	}
+	if policy["mode"] == "round_robin" {
+		return p.rotationRouteLocked(skipBlocked, advance)
 	}
 	ids := arr(policy["ids"])
 	if policy["mode"] != "pick" || len(ids) != 1 || num(ids[0]) <= 0 {
@@ -135,25 +138,93 @@ func (p *ProxyPool) Account(uid string) (Route, error) {
 	r, _, e := p.pinLocked(int(num(ids[0])))
 	return r, e
 }
-func (p *ProxyPool) Policy(uid string) M {
+
+func (p *ProxyPool) Account(uid string, skipBlocked ...bool) (Route, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.accountLocked(uid, len(skipBlocked) == 0 || skipBlocked[0], true)
+}
+
+func (p *ProxyPool) Rotating(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return obj(obj(p.data["accounts"])[uid])["mode"] == "round_robin"
+}
+
+func (p *ProxyPool) rotationCandidatesLocked(skipBlocked bool) []int {
+	indices := []int{}
+	seen := map[string]bool{}
+	for i, v := range arr(p.data["proxies"]) {
+		m := obj(v)
+		if !yes(m["enabled"]) || skipBlocked && yes(m["blocked"]) {
+			continue
+		}
+		fingerprint := digest(text(m["url"]))
+		if !seen[fingerprint] {
+			indices = append(indices, i)
+			seen[fingerprint] = true
+		}
+	}
+	return indices
+}
+
+func (p *ProxyPool) rotationRouteLocked(skipBlocked, advance bool) (Route, error) {
+	indices := p.rotationCandidatesLocked(skipBlocked)
+	if len(indices) < 2 {
+		return Route{}, fmt.Errorf("轮询代理至少需要两条已启用的不同代理，当前可用 %d 条，请检查代理池", len(indices))
+	}
+	rows := arr(p.data["proxies"])
+	start := p.rotationNext % len(rows)
+	chosen, distance := -1, len(rows)
+	for _, idx := range indices {
+		m := obj(rows[idx])
+		if digest(text(m["url"])) == p.rotationLast {
+			continue
+		}
+		if d := (idx - start + len(rows)) % len(rows); d < distance {
+			chosen, distance = idx, d
+		}
+	}
+	if chosen < 0 {
+		return Route{}, errors.New("轮询代理没有可切换的出口，请检查代理池")
+	}
+	route, _, err := p.pinLocked(int(num(obj(rows[chosen])["id"])))
+	if err == nil && advance {
+		p.rotationNext = (chosen + 1) % len(rows)
+		p.rotationLast = route.Fingerprint
+	}
+	return route, err
+}
+
+func (p *ProxyPool) Policy(uid string, skipBlocked ...bool) M {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	policy := clone(obj(obj(p.data["accounts"])[uid]))
-	p.mu.Unlock()
 	if len(policy) == 0 {
 		policy = M{"mode": "direct", "ids": []any{}}
 	}
-	r, e := p.Account(uid)
+	skip := len(skipBlocked) == 0 || skipBlocked[0]
+	r, e := p.accountLocked(uid, skip, false)
 	policy["available"] = e == nil
+	if policy["mode"] == "round_robin" {
+		policy["name"] = "轮询代理"
+		policy["available_count"] = len(p.rotationCandidatesLocked(skip))
+		if e != nil {
+			policy["error"] = e.Error()
+		}
+		if len(p.rotationCandidatesLocked(false)) > 0 && len(p.rotationCandidatesLocked(true)) == 0 {
+			policy["blocked"], policy["blocked_reason"] = true, "轮询代理的全部出口均被封控，请在代理池检查"
+		}
+		return policy
+	}
 	if e != nil {
 		policy["error"] = e.Error()
 		policy["name"] = "指定代理不可用"
 	} else {
 		policy["name"] = r.Name
-		p.mu.Lock()
 		if b := p.blockLocked(r.ID); b != nil {
 			policy["blocked"], policy["blocked_reason"], policy["blocked_at"] = true, b["blocked_reason"], b["blocked_at"]
 		}
-		p.mu.Unlock()
 	}
 	return policy
 }
@@ -177,12 +248,15 @@ func (p *ProxyPool) blockLocked(id int) M {
 
 // ExitBlocked reports whether the account's current exit is blocked.
 func (p *ProxyPool) ExitBlocked(uid string) bool {
-	r, e := p.Account(uid)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if obj(obj(p.data["accounts"])[uid])["mode"] == "round_robin" {
+		return len(p.rotationCandidatesLocked(false)) > 0 && len(p.rotationCandidatesLocked(true)) == 0
+	}
+	r, e := p.accountLocked(uid, true, false)
 	if e != nil {
 		return false
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	return p.blockLocked(r.ID) != nil
 }
 func (p *ProxyPool) AnyBlocked() bool {
@@ -226,6 +300,25 @@ func (p *ProxyPool) Block(r Route, reason string) error {
 	}
 	if e := writeJSON(filepath.Join(p.dir, "proxies.json"), next); e != nil {
 		return e
+	}
+	p.data = next
+	return nil
+}
+
+func (p *ProxyPool) BindRotation(uids []string, skipBlocked bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.rotationCandidatesLocked(skipBlocked)) < 2 {
+		return errors.New("轮询代理至少需要两条已启用的不同代理，请先在代理池添加或启用")
+	}
+	next := clone(p.data)
+	accounts := obj(next["accounts"])
+	for _, uid := range uids {
+		accounts[uid] = M{"mode": "round_robin", "ids": []any{}}
+	}
+	next["accounts"] = accounts
+	if err := writeJSON(filepath.Join(p.dir, "proxies.json"), next); err != nil {
+		return err
 	}
 	p.data = next
 	return nil

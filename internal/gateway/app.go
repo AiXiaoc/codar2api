@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -27,15 +28,22 @@ type Config struct {
 	DefaultPassword            string
 	SecureCookie, NoBackground bool
 	RequestDiagnostics         bool
-	MaxConcurrent              int
+	// AllowRemoteManagement supplies the initial value; nil defaults to enabled.
+	// Saved panel settings take precedence.
+	AllowRemoteManagement *bool
+	MaxConcurrent         int
 }
 
 func (c *Config) defaults() {
 	if c.Addr == "" {
-		c.Addr = "127.0.0.1:8801"
+		c.Addr = "0.0.0.0:8801"
 	}
 	if c.DataDir == "" {
 		c.DataDir = "data"
+	}
+	if c.AllowRemoteManagement == nil {
+		enabled := true
+		c.AllowRemoteManagement = &enabled
 	}
 	if c.APIBase == "" {
 		c.APIBase = "https://api.claw.speedai.com"
@@ -86,7 +94,7 @@ type App struct {
 
 func New(cfg Config) (*App, string, error) {
 	cfg.defaults()
-	store, e := NewStore(cfg.DataDir)
+	store, e := newStore(cfg.DataDir, *cfg.AllowRemoteManagement)
 	if e != nil {
 		return nil, "", e
 	}
@@ -129,8 +137,11 @@ func (a *App) lockAccount(uid string) func() {
 	return mu.Unlock
 }
 func (a *App) public(account M) M {
-	policy := a.proxies.Policy(text(account["uid"]))
+	policy := a.proxies.Policy(text(account["uid"]), yes(a.store.Settings()["ip_block"]))
 	d := a.store.Public(account, policy)
+	if policy["mode"] == "round_robin" && policy["available"] == false && yes(d["ready"]) {
+		d["ready"], d["reason"] = false, policy["error"]
+	}
 	if yes(policy["blocked"]) && yes(a.store.Settings()["ip_block"]) && yes(d["ready"]) {
 		d["ready"], d["reason"] = false, "出口 IP 封控"
 	}
@@ -149,19 +160,35 @@ func payload(w http.ResponseWriter, r *http.Request) (M, error) {
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(30 * time.Second))
 	defer controller.SetReadDeadline(time.Time{})
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	originalBody := r.Body
+	r.Body = http.MaxBytesReader(w, originalBody, 8<<20)
 	defer r.Body.Close()
+	raw, e := io.ReadAll(r.Body)
+	if e != nil {
+		var tooLarge *http.MaxBytesError
+		if detailFor(r.Context()) != nil && errors.As(e, &tooLarge) {
+			// The request is still rejected, but diagnostic capture needs the
+			// remaining bytes that the size-limiting reader did not consume.
+			_, _ = io.Copy(io.Discard, originalBody)
+		}
+		return nil, errors.New("请求体必须是 JSON 对象（最多 8MB）")
+	}
 	var m M
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if isChat(r.URL.Path) {
+		dec.UseNumber()
+	}
 	if e := dec.Decode(&m); e != nil || m == nil {
 		return nil, errors.New("请求体必须是 JSON 对象（最多 8MB）")
 	}
 	if e := dec.Decode(new(any)); e != io.EOF {
 		return nil, errors.New("请求体只能包含一个 JSON 对象")
 	}
+	if isChat(r.URL.Path) {
+		*r = *r.WithContext(context.WithValue(r.Context(), originalModelBodyKey{}, raw))
+	}
 	if trace := diagnosticFor(r); trace != nil {
-		b := mustMarshal(m)
-		trace.record("incoming_body", M{"body": m, "json_bytes": len(b), "json_sha256": digest(string(b))})
+		trace.record("incoming_body", M{"body": m, "json_bytes": len(raw), "json_sha256": digest(string(raw))})
 	}
 	return m, nil
 }
@@ -187,6 +214,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 500, "内部错误，请检查服务日志")
 		}
 	}()
+	public := isChat(path) || path == "/v1/models" || path == "/ping" || path == "/health"
+	if !public && !yes(a.store.Settings()["allow_remote_management"]) && !localManagementRequest(r) {
+		apiError(w, http.StatusForbidden, "远程管理未开启，请在运行网关的本机进入「设置 → 远程管理」开启允许远程访问")
+		return
+	}
 	if isChat(path) || path == "/v1/models" {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, X-Codar-Account")
@@ -250,6 +282,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if e != nil {
 			apiError(w, 401, e.Error())
 			return
+		}
+		if isChat(path) {
+			var finish func()
+			w, r, finish = a.beginDetail(w, r)
+			defer finish()
 		}
 		if path == "/v1/models" {
 			models, e := a.catalog(r.Context(), false)
@@ -321,6 +358,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "/auth/session" && r.Method == "GET" {
 		jsonResponse(w, 200, M{"ok": true, "version": Version})
 		return
+	}
+	if path == "/accounts/test" && r.Method == "POST" {
+		var finish func()
+		w, r, finish = a.beginDetail(w, r)
+		defer finish()
 	}
 	var p M
 	var e error

@@ -3,9 +3,11 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,16 +40,32 @@ func normalizeUsage(u M) M {
 }
 func holders(v M) []M { return []M{v, obj(v["response"]), obj(v["message"])} }
 
+func responseModel(v M) (string, bool) {
+	var model string
+	found := false
+	for _, h := range holders(v) {
+		if value, ok := h["model"].(string); ok {
+			model, found = value, true
+		}
+	}
+	return model, found
+}
+
 type streamTap struct {
 	buf, data    []byte
 	raw, billing M
 	err          string
 	terminal     string
+	model        string
+	hasModel     bool
 	onError      func(M)
 }
 
 func newTap(onError func(M)) *streamTap { return &streamTap{raw: M{}, onError: onError} }
 func (t *streamTap) inspect(v M) {
+	if model, ok := responseModel(v); ok {
+		t.model, t.hasModel = model, true
+	}
 	switch v["type"] {
 	case "message_stop", "response.completed":
 		t.terminal = text(v["type"])
@@ -128,14 +146,18 @@ func (t *streamTap) Finish() {
 }
 
 type UsageLog struct {
-	mu            sync.Mutex
-	path          string
-	rows, pending []M
-	lastCompact   time.Time
+	mu                sync.Mutex
+	path              string
+	rows, pending     []M
+	lastCompact       time.Time
+	lastDetailCleanup time.Time
 }
 
 func NewUsageLog(dir string) (*UsageLog, error) {
-	u := &UsageLog{path: filepath.Join(dir, "usage.jsonl"), rows: []M{}, pending: []M{}, lastCompact: time.Now()}
+	u := &UsageLog{path: filepath.Join(dir, "usage.jsonl"), rows: []M{}, pending: []M{}, lastCompact: time.Now(), lastDetailCleanup: time.Now()}
+	if err := u.pruneRequestDetails(); err != nil {
+		log.Printf("request detail cleanup failed: %v", err)
+	}
 	f, e := os.Open(u.path)
 	if errors.Is(e, os.ErrNotExist) {
 		return u, nil
@@ -182,6 +204,12 @@ func (u *UsageLog) Record(row M) {
 func (u *UsageLog) Flush() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if time.Since(u.lastDetailCleanup) >= time.Hour {
+		if err := u.pruneRequestDetails(); err != nil {
+			log.Printf("request detail cleanup failed: %v", err)
+		}
+		u.lastDetailCleanup = time.Now()
+	}
 	if len(u.pending) == 0 {
 		return nil
 	}
@@ -249,6 +277,105 @@ func (u *UsageLog) Flush() error {
 			return e
 		}
 		u.lastCompact = time.Now()
+	}
+	return nil
+}
+
+// RequestDetail accepts only opaque random identifiers and reads regular files
+// from the detail directory; no request path can escape the data directory.
+func (u *UsageLog) RequestDetail(id string) (M, error) {
+	if !validDetailID(id) {
+		return nil, os.ErrNotExist
+	}
+	path := filepath.Join(filepath.Dir(u.path), "request-details", id+".json")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.ModTime().Before(time.Now().Add(-7*24*time.Hour)) {
+		return nil, os.ErrNotExist
+	}
+	var detail M
+	if err := readJSON(path, &detail); err != nil {
+		return nil, err
+	}
+	if detail == nil {
+		return nil, errors.New("详细记录格式错误")
+	}
+	return detail, nil
+}
+
+func validDetailID(id string) bool {
+	if len(id) != 32 || strings.ToLower(id) != id {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
+}
+
+// Keep complete error details for seven days. Abandoned in-progress captures
+// older than a day are safe to remove: requests have much shorter deadlines.
+func (u *UsageLog) pruneRequestDetails() error {
+	dir := filepath.Join(filepath.Dir(u.path), "request-details")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	tempCutoff := time.Now().Add(-24 * time.Hour)
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		isTempDir := strings.HasPrefix(name, ".active-") && entry.IsDir() && entry.Type()&os.ModeSymlink == 0
+		isTempFile := strings.HasPrefix(name, ".detail-") && entry.Type().IsRegular()
+		if isTempDir || isTempFile {
+			info, err := entry.Info()
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if info.ModTime().Before(tempCutoff) {
+				target, err := filepath.Abs(filepath.Join(base, name))
+				if err != nil {
+					return err
+				}
+				if filepath.Dir(target) != base {
+					return errors.New("临时记录路径超出目录")
+				}
+				if isTempDir {
+					err = os.RemoveAll(target)
+				} else {
+					err = os.Remove(target)
+				}
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".json") || !validDetailID(strings.TrimSuffix(entry.Name(), ".json")) || !entry.Type().IsRegular() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -371,6 +498,19 @@ func (u *UsageLog) Requests(uid, username string, failedOnly bool, page, size in
 				continue
 			}
 			item := M{"ts": r["ts"], "model": r["model"], "path": r["path"], "source": r["source"], "stream": r["stream"], "status": t["status"], "ok": ok, "error": t["error"], "switched": j < len(tries)-1}
+			if requested, ok := r["requested_model"].(string); ok {
+				item["requested_model"] = requested
+			}
+			if model, ok := t["response_model"].(string); ok {
+				item["response_model"] = model
+			} else if j == len(tries)-1 {
+				if model, ok := r["response_model"].(string); ok {
+					item["response_model"] = model
+				}
+			}
+			if id := text(r["diagnostic_id"]); id != "" {
+				item["diagnostic_id"] = id
+			}
 			if j == len(tries)-1 {
 				item["prompt"], item["cached"], item["completion"], item["ms"] = r["prompt"], r["cached"], r["completion"], r["ms"]
 			}

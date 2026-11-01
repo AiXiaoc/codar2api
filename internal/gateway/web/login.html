@@ -18,5 +18,5 @@ button:hover:not(:disabled){transform:translate(-1px,-1px);box-shadow:4px 4px 0 
 @media (max-width:600px){.d{display:none}}
 </style></head>
 <body><span class="d d1"></span><span class="d d2"></span><span class="d d3"></span>
-<main><h1>Codar2API</h1><form id="form"><input id="password" type="password" autocomplete="current-password" placeholder="管理员密码" aria-label="管理员密码" required autofocus maxlength="1024"><button id="submit" type="submit">进入面板</button><p id="error" role="alert"></p></form></main>
+<main><h1>Codar2API</h1><form id="form"><input id="password" type="password" autocomplete="current-password" placeholder="管理员密钥" aria-label="管理员密钥" required autofocus maxlength="1024"><button id="submit" type="submit">进入面板</button><p id="error" role="alert"></p></form></main>
 <script>document.querySelector('#form').onsubmit=async e=>{e.preventDefault();const b=document.querySelector('#submit'),err=document.querySelector('#error');b.disabled=true;err.textContent='';try{const r=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.querySelector('#password').value})});const d=await r.json();if(!r.ok)throw Error(d.error?.message||'登录失败');location.replace('/')}catch(e){err.textContent=e.message}finally{b.disabled=false}};</script></body></html>

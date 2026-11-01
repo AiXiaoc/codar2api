@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -28,7 +30,9 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			a.store.mu.RUnlock()
 			return M{"accounts": rows, "settings": a.store.Settings(), "catalog_at": at}, 200, nil
 		case "/settings":
-			return M{"settings": a.store.Settings(), "schema": schema}, 200, nil
+			return M{"settings": a.store.Settings(), "schema": schema, "scheduling_options": schedulingOptions}, 200, nil
+		case "/accounts/concurrency":
+			return M{"accounts": a.store.Concurrency()}, 200, nil
 		case "/keys":
 			return M{"keys": a.auth.Keys()}, 200, nil
 		case "/proxy-pool":
@@ -55,6 +59,15 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			d := a.usage.Stats(now()-hours*3600, a.cost)
 			d["hours"] = hours
 			return d, 200, nil
+		case "/stats/request-detail":
+			detail, e := a.usage.RequestDetail(q.Get("id"))
+			if e != nil {
+				if errors.Is(e, os.ErrNotExist) {
+					return nil, 404, errors.New("详细记录不存在或已过期")
+				}
+				return nil, 500, errors.New("读取详细记录失败")
+			}
+			return M{"ok": true, "detail": detail}, 200, nil
 		case "/prices":
 			_, _ = a.catalog(ctx, false)
 			return M{"prices": a.priceTable(), "sources": M{"cny": "原项目人民币参考价", "usd": "原项目美元参考价（1:1）", "catalog": "Codar 目录价", "custom": "自定义"}, "note": "参考价格沿用原项目，实际计费以上游为准，可在此调整。"}, 200, nil
@@ -150,6 +163,18 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 		}
 		if len(uids) == 0 {
 			return nil, 400, errors.New("当前没有账号")
+		}
+		if mode, exists := p["proxy_mode"]; exists {
+			if mode != "round_robin" {
+				return nil, 400, errors.New("代理模式无效")
+			}
+			if _, exists := p["proxy_id"]; exists {
+				return nil, 400, errors.New("轮询代理无需指定固定代理")
+			}
+			if e := a.proxies.BindRotation(uids, yes(a.store.Settings()["ip_block"])); e != nil {
+				return nil, 400, e
+			}
+			return M{"ok": true, "updated": len(uids)}, 200, nil
 		}
 		if _, ok := p["proxy_id"]; !ok {
 			return nil, 400, errors.New("请选择出口")
@@ -284,6 +309,11 @@ func (a *App) operateAccount(ctx context.Context, path, uid string, p M) M {
 		a.autoActions(ctx, acc)
 	case "/accounts/update":
 		save = false
+		scheduling, err := accountSchedulingPatch(p)
+		if err != nil {
+			e = err
+			break
+		}
 		if v, ok := p["enabled"]; ok {
 			if _, ok := v.(bool); !ok {
 				e = errors.New("enabled 必须是布尔值")
@@ -291,6 +321,9 @@ func (a *App) operateAccount(ctx context.Context, path, uid string, p M) M {
 			}
 		}
 		e = a.store.Update(uid, func(c M) error {
+			for k, v := range scheduling {
+				c[k] = v
+			}
 			if v, ok := p["enabled"]; ok {
 				c["enabled"] = v
 			}
@@ -411,7 +444,7 @@ func (a *App) exportAccounts(p M) (M, error) {
 		if len(pick) > 0 && !pick[text(acc["uid"])] {
 			continue
 		}
-		rows = append(rows, M{"uid": acc["uid"], "username": acc["username"], "display_name": acc["display_name"], "token": acc["token"], "note": acc["note"], "enabled": yes(acc["enabled"]), "login_via": acc["login_via"], "added_at": acc["added_at"]})
+		rows = append(rows, M{"uid": acc["uid"], "username": acc["username"], "display_name": acc["display_name"], "token": acc["token"], "note": acc["note"], "enabled": yes(acc["enabled"]), "login_via": acc["login_via"], "added_at": acc["added_at"], "weight": acc["weight"], "max_concurrency": acc["max_concurrency"]})
 	}
 	if len(rows) == 0 {
 		return nil, errors.New("没有可导出的账号")
@@ -449,13 +482,25 @@ func (a *App) importAccounts(ctx context.Context, p M) (M, error) {
 			via = "token"
 		}
 		note := []rune(strings.TrimSpace(text(m["note"])))
-		items = append(items, M{"index": i + 1, "token": token, "note": string(note[:min(len(note), 200)]), "via": via, "enabled": m["enabled"]})
+		scheduling, err := accountSchedulingPatch(m)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 个账号：%w", i+1, err)
+		}
+		items = append(items, M{"index": i + 1, "token": token, "note": string(note[:min(len(note), 200)]), "via": via, "enabled": m["enabled"], "scheduling": scheduling})
 	}
 	rows := parallel(ctx, items, func(v M) M {
 		r := M{"index": v["index"], "token_masked": masked(text(v["token"]))}
 		d, e := a.importToken(ctx, text(v["token"]), text(v["note"]), text(v["via"]), nil)
-		if e == nil && !yes(d["updated"]) && v["enabled"] == false {
-			e = a.store.Update(text(obj(d["account"])["uid"]), func(c M) error { c["enabled"] = false; return nil })
+		if e == nil && !yes(d["updated"]) {
+			e = a.store.Update(text(obj(d["account"])["uid"]), func(c M) error {
+				if v["enabled"] == false {
+					c["enabled"] = false
+				}
+				for k, value := range obj(v["scheduling"]) {
+					c[k] = value
+				}
+				return nil
+			})
 		}
 		if e != nil {
 			r["ok"], r["error"] = false, safeMessage(e.Error())

@@ -41,12 +41,141 @@ async function loadStats(){
     + (m.ttft_ms == null ? '-' : Math.round(m.ttft_ms) + ' ms') + '</td><td class="num">' + yuan(m.price_cost) + '</td></tr>').join('') || '<tr><td colspan="8" class="empty">这段时间还没有请求</td></tr>';
   $('#statAccounts').innerHTML = d.accounts.map(a => '<tr><td>' + esc(a.account) + '</td><td class="num">' + n(a.requests) + '</td><td class="num ' + rateCls(a.success_rate) + '">' + pctS(a.success_rate)
     + '</td><td class="num">' + pctS(a.cache_hit_rate) + '</td><td class="num">' + yuan(a.price_cost) + '</td></tr>').join('') || '<tr><td colspan="5" class="empty">这段时间还没有请求</td></tr>';
-  $('#statRecent').innerHTML = d.recent.slice(0, 30).map(r => '<tr><td class="nowrap muted" title="' + fmt(r.ts) + '">' + fmtT(r.ts) + '</td><td class="mono">' + esc(r.model) + '</td><td class="nowrap">' + esc(API_NAME[r.path] || r.path)
+  $('#statRecent').innerHTML = d.recent.slice(0, 30).map(r => '<tr><td class="nowrap muted" title="' + fmt(r.ts) + '">' + fmtT(r.ts) + '</td><td class="mono">' + requestModelLabel(r) + '</td><td class="nowrap">' + esc(API_NAME[r.path] || r.path)
     + (r.stream ? ' ' + chip('sm', '流式') : '') + (r.source === 'panel' ? ' ' + chip('info sm', '面板') : '') + '</td><td>' + esc(r.account || '-') + (r.attempts > 1 ? '<div class="muted small">换号 ' + (r.attempts - 1) + ' 次</div>' : '') + '</td>'
-    + '<td>' + (r.ok ? chip('ok sm', r.status) : chip('bad sm', r.status || '失败', r.error) + '<div class="bad-t small" style="max-width:240px">' + esc((r.error || '').slice(0, 80)) + '</div>') + '</td>'
+    + '<td>' + (r.ok ? chip('ok sm', r.status) : chip('bad sm', r.status || '失败', r.error) + '<div class="bad-t small" style="max-width:240px">' + esc((r.error || '').slice(0, 80)) + '</div>')
+    + (r.diagnostic_id ? ' <button type="button" class="link" data-request-detail="' + esc(r.diagnostic_id) + '">查看详情</button>' : '') + '</td>'
     + '<td class="num">' + (r.prompt || r.completion ? n(r.prompt) + ' / ' + n(r.cached) + ' / ' + n(r.completion) : '-') + '</td><td class="num">' + (r.ttft_ms != null ? r.ttft_ms + ' ms' : '-')
     + '</td><td class="num">' + (r.ms != null ? n(r.ms) + ' ms' : '-') + '</td><td class="num">' + yuan(r.price_cost) + '</td></tr>').join('') || '<tr><td colspan="9" class="empty">还没有请求</td></tr>';
 }
+let DETAIL_GENERATION = 0, DETAIL_COPY = [];
+// Format JSON without parsing and re-encoding values, so large numbers and
+// escaped strings stay exactly as the sender wrote them.
+function formatDetailBody(value, encoding){
+  if(value == null) return '（未记录）';
+  if(typeof value !== 'string') return JSON.stringify(value, null, 2);
+  if(value === '') return '（空）';
+  if(String(encoding || '').toLowerCase() === 'base64') return value;
+  const raw = value.trim();
+  try { JSON.parse(raw); } catch(_) {
+    if(!/(?:^|\n)(?:data|event|id|retry):/.test(value)) return value;
+    return value.split('\n').map(line => {
+      if(!line.startsWith('data:')) return line;
+      const payload = line.slice(5).trim();
+      try { JSON.parse(payload); } catch(_) { return line; }
+      return 'data: ' + formatDetailBody(payload).replace(/\n/g, '\n  ');
+    }).join('\n');
+  }
+  let out = '', indent = 0, quoted = false, escaped = false, previous = '';
+  const newline = () => '\n' + '  '.repeat(indent);
+  for(let i = 0; i < raw.length; i++){
+    const c = raw[i];
+    if(quoted){
+      out += c;
+      if(escaped) escaped = false;
+      else if(c === '\\') escaped = true;
+      else if(c === '"'){ quoted = false; previous = c; }
+    } else if(c === '"'){ quoted = true; out += c; }
+    else if(c === '{' || c === '['){
+      out += c;
+      let next = i + 1; while(next < raw.length && /\s/.test(raw[next])) next++;
+      if(raw[next] !== '}' && raw[next] !== ']'){ indent++; out += newline(); }
+      else indent++;
+      previous = c;
+    } else if(c === '}' || c === ']'){
+      indent = Math.max(0, indent - 1);
+      if(previous !== '{' && previous !== '[') out += newline();
+      out += c; previous = c;
+    } else if(c === ','){ out += ',' + newline(); previous = c; }
+    else if(c === ':'){ out += ': '; previous = c; }
+    else if(!/\s/.test(c)){ out += c; previous = c; }
+  }
+  return out;
+}
+function formatDetailHeaders(headers){
+  if(headers == null) return '（未记录）';
+  if(typeof headers === 'string') return headers || '（空）';
+  const lines = [];
+  Object.entries(headers).forEach(([name, values]) => {
+    (Array.isArray(values) ? values : [values]).forEach(value => lines.push(name + ': ' + String(value)));
+  });
+  return lines.join('\n') || '（空）';
+}
+function detailPart(title, value, copy, highlighted){
+  const id = DETAIL_COPY.push(copy === undefined ? value : copy) - 1;
+  return '<section class="request-detail-part"><div class="request-detail-head"><b>' + esc(title) + '</b>'
+    + '<button type="button" class="btn ghost sm" data-detail-copy="' + id + '">复制</button></div><pre class="request-detail-pre">' + (highlighted === undefined ? esc(value) : highlighted) + '</pre></section>';
+}
+function detailHeaders(title, headers){
+  return '<details class="request-detail-fold"><summary>' + esc(title) + '</summary>' + detailPart(title, formatDetailHeaders(headers)) + '</details>';
+}
+function detailBodyLabel(part, label){
+  return label + (String((part || {}).body_encoding || '').toLowerCase() === 'base64' ? '（二进制 / Base64）' : '');
+}
+function detailBody(part, label, highlighted){
+  part = part || {};
+  return detailPart(detailBodyLabel(part, label), formatDetailBody(part.body, part.body_encoding), typeof part.body === 'string' ? part.body : undefined, highlighted);
+}
+function detailMeta(part){
+  const meta = [part.method, part.url].filter(Boolean).join(' ');
+  return meta ? '<div class="request-detail-meta mono">' + esc(meta) + '</div>' : '';
+}
+function detailForward(original, attempt, index, total){
+  const request = (attempt || {}).request;
+  if(!request || !request.method) return '<div class="request-detail-attempt"><h4>第 ' + (index + 1) + ' 次</h4><p class="muted small">未发送到上游</p></div>';
+  const before = original && original.body, after = request.body;
+  const display = formatDetailBody(after, request.body_encoding);
+  let comparison;
+  try {
+    comparison = DetailDiff.compare(before === '' ? '' : before == null ? null : formatDetailBody(before, original.body_encoding),
+      after === '' ? '' : after == null ? null : display,
+      {beforeBinary: String((original || {}).body_encoding || '').toLowerCase() === 'base64', afterBinary: String(request.body_encoding || '').toLowerCase() === 'base64'});
+  } catch(_) { comparison = {ranges: [], removed: [], changed: false, reason: '无法比较正文；以下显示原始转发内容。'}; }
+  const note = comparison.reason || (comparison.changed ? '黄色高亮表示相对原始请求体新增或修改的内容。' : '正文内容与原始请求体一致（忽略 JSON 排序和空白）。');
+  const deletions = comparison.removed.length ? '<details class="request-detail-fold"><summary>原始请求中有 ' + comparison.removed.length + ' 处内容被删除</summary><pre class="request-detail-pre">' + esc(comparison.removed.join('\n')) + '</pre></details>' : '';
+  const highlighted = after === '' || after == null ? esc(display) : DetailDiff.render(display, comparison.ranges, esc);
+  return '<div class="request-detail-attempt">' + (total > 1 ? '<h4>第 ' + (index + 1) + ' 次转发</h4>' : '') + detailMeta(request)
+    + '<p class="request-detail-hint muted">' + esc(note) + '</p>' + detailBody(request, '转发正文', highlighted) + deletions + detailHeaders('转发请求头', request.headers) + '</div>';
+}
+function detailUpstreamResponse(attempt, index){
+  const response = (attempt || {}).response || {}, error = (attempt || {}).error;
+  const status = response.status ? ' · HTTP ' + response.status : '';
+  return '<details class="request-detail-fold"><summary>第 ' + (index + 1) + ' 次上游响应' + esc(status) + '</summary>'
+    + (error ? '<p class="bad-t small">' + esc(error) + '</p>' : '')
+    + (response.status ? detailHeaders('上游响应头', response.headers) + detailBody(response, '上游响应正文') : '<p class="muted small">未收到上游响应</p>') + '</details>';
+}
+async function openRequestDetail(id){
+  const generation = ++DETAIL_GENERATION;
+  DETAIL_COPY = [];
+  $('#requestDetailBody').innerHTML = spinner('正在读取详细记录…');
+  openModal('#requestDetailModal');
+  try {
+    const result = await api('/stats/request-detail?id=' + encodeURIComponent(id));
+    if(generation !== DETAIL_GENERATION) return;
+    const d = result.detail || {}, attempts = Array.isArray(d.attempts) ? d.attempts : [], original = d.request || {}, response = d.response || {};
+    $('#requestDetailBody').innerHTML = '<section class="request-detail-group"><h3>原始请求体</h3>' + detailMeta(original)
+      + detailBody(original, '原始正文') + detailHeaders('原始请求头', original.headers) + '</section>'
+      + '<section class="request-detail-group"><h3>转发请求体</h3>'
+      + (attempts.length ? attempts.map((a, i) => detailForward(original, a, i, attempts.length)).join('') : '<p class="muted small">未发送到上游</p>') + '</section>'
+      + '<section class="request-detail-group"><h3>响应体</h3>' + (response.status ? '<div class="request-detail-meta">返回客户端 · HTTP ' + esc(response.status) + '</div>' : '<p class="muted small">未记录客户端响应</p>')
+      + detailBody(response, '返回客户端的正文') + detailHeaders('返回客户端的响应头', response.headers)
+      + attempts.map((a, i) => detailUpstreamResponse(a, i)).join('') + '</section>';
+  } catch(err){
+    if(generation === DETAIL_GENERATION) $('#requestDetailBody').innerHTML = '<div class="notice bad">读取失败：' + esc(err.message) + '</div>';
+  }
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-request-detail]');
+  if(b) openRequestDetail(b.dataset.requestDetail);
+});
+$('#requestDetailBody').addEventListener('click', async e => {
+  const b = e.target.closest('[data-detail-copy]'); if(!b) return;
+  const ok = await copyText(DETAIL_COPY[Number(b.dataset.detailCopy)] || '');
+  toast(ok ? '已复制' : '复制失败', !ok);
+});
+MODAL_CLOSE['#requestDetailModal'] = id => {
+  DETAIL_GENERATION++; DETAIL_COPY = []; $('#requestDetailBody').textContent = ''; closeModal(id);
+};
 $('#statWin').addEventListener('click', e => { const b = e.target.closest('[data-h]'); if(!b) return;
   STAT_H = +b.dataset.h; try { localStorage.setItem('codar-stat-hours', STAT_H); } catch(_) {} loadStats().catch(err => toast(err.message, true)); });
 async function loadUpstream(){
@@ -63,32 +192,104 @@ async function loadUpstream(){
 $('#upWin').addEventListener('click', e => { const b = e.target.closest('[data-updays]'); if(!b) return; UPDAYS = +b.dataset.updays; loadUpstream().catch(err => toast(err.message, true)); });
 $('#upReload').onclick = () => loadUpstream().catch(err => toast(err.message, true));
 /* ---- 设置：按用途分组，每项后面一句话说明规则 ---- */
-let SET = null, PRICES = [];
-const SET_GROUPS = [['请求转发', ['use_codar_ua', 'codar_ua', 'dsh_identity_rewrite']],
-  ['调度与换号', ['max_attempts', 'session_sticky', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'allow_general_balance']],
-  ['自动任务', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']]];
+let SET = null, PRICES = [], SETTINGS_PENDING = 0, SETTINGS_REVISION = 0, SETTINGS_SAVE_QUEUE = Promise.resolve();
+const SET_GROUPS = [['relay', ['use_codar_ua', 'codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill', 'detailed_debug']],
+  ['routing', ['scheduling_strategy', 'max_attempts', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'allow_general_balance']],
+  ['tasks', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']],
+  ['remote', ['allow_remote_management']]];
+let SETTINGS_TAB = 'relay';
+try { SETTINGS_TAB = localStorage.getItem('codar-settings-tab') || 'relay'; } catch(e) {}
+function showSettingsTab(tab){
+  if(![...document.querySelectorAll('[data-settings-tab]')].some(b => b.dataset.settingsTab === tab)) tab = 'relay';
+  SETTINGS_TAB = tab;
+  document.querySelectorAll('[data-settings-tab]').forEach(b => {
+    const active = b.dataset.settingsTab === tab;
+    b.setAttribute('aria-selected', String(active)); b.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('[data-settings-panel]').forEach(p => p.hidden = p.dataset.settingsPanel !== tab);
+  $('#settingsActions').hidden = tab === 'prices';
+  try { localStorage.setItem('codar-settings-tab', tab); } catch(e) {}
+  if(tab === 'prices' && SET) loadPrices().catch(err => toast(err.message, true));
+}
+$('#settingsNav').addEventListener('click', e => {
+  const b = e.target.closest('[data-settings-tab]'); if(b) showSettingsTab(b.dataset.settingsTab);
+});
+$('#settingsNav').addEventListener('keydown', e => {
+  if(!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const tabs = [...document.querySelectorAll('[data-settings-tab]')], i = tabs.indexOf(e.target);
+  if(i < 0) return;
+  e.preventDefault();
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1
+    : (i + (['ArrowUp', 'ArrowLeft'].includes(e.key) ? -1 : 1) + tabs.length) % tabs.length;
+  showSettingsTab(tabs[next].dataset.settingsTab); tabs[next].focus();
+});
 function drawSettings(vals){
   const known = SET_GROUPS.flatMap(g => g[1]), groups = SET_GROUPS.map(g => [g[0], g[1].slice()]);
-  SET.schema.forEach(f => { if(!known.includes(f.key)) groups[groups.length - 1][1].push(f.key); });
+  SET.schema.forEach(f => { if(!known.includes(f.key)) groups.find(g => g[0] === 'tasks')[1].push(f.key); });
   const field = f => '<div class="set' + (f.type === 'string' ? ' set-text' : '') + '"><div class="set-l"><b>' + esc(f.label) + '</b>' + (f.help ? '<span class="muted">' + esc(f.help) + '</span>' : '') + '</div>'
     + (f.type === 'bool' ? sw(vals[f.key], f.label, 'data-k="' + f.key + '" title="默认' + (f.default ? '开' : '关') + '"')
-      : f.type === 'string' ? '<textarea class="in mono" data-k="' + f.key + '" maxlength="' + f.max + '" rows="3" aria-label="' + esc(f.label) + '" spellcheck="false">' + esc(vals[f.key]) + '</textarea>'
+      : f.type === 'select' ? '<select class="in strategy-in" data-k="' + f.key + '" aria-label="' + esc(f.label) + '">' + (SET.scheduling_options || []).map(o => '<option value="' + esc(o.value) + '"' + (o.value === vals[f.key] ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') + '</select>'
+      : f.type === 'string' ? (f.key === 'codar_ua' ? '<div class="ua-controls">' + sw(vals.use_codar_ua, '启用自定义 UA', 'data-k="use_codar_ua" title="开启后替换 UA，关闭后沿用调用方 UA"') : '') + '<input class="in mono text-in" type="text" data-k="' + f.key + '" maxlength="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" autocomplete="off" spellcheck="false">' + (f.key === 'codar_ua' ? '</div>' : '')
       : '<input class="in num-in" type="number" data-k="' + f.key + '" min="' + f.min + '" max="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" title="默认 ' + f.default + '，范围 ' + f.min + ' 至 ' + f.max + '">') + '</div>';
-  $('#setGrid').innerHTML = groups.map((g, i) => '<section class="panel' + (i ? ' tape-b' : '') + '"><div class="panel-h"><h2>' + g[0] + '</h2></div><div class="sets">'
-    + g[1].map(k => SET.schema.find(f => f.key === k)).filter(Boolean).map(field).join('') + '</div></section>').join('');
+  groups.forEach(g => {
+    document.querySelector('[data-setting-fields="' + g[0] + '"]').innerHTML = g[1].filter(k => k !== 'use_codar_ua').map(k => SET.schema.find(f => f.key === k)).filter(Boolean).map(field).join('');
+  });
+}
+function settingValue(el){
+  return el.classList.contains('sw') ? el.getAttribute('aria-checked') === 'true' : el.type === 'number' ? Number(el.value) : el.value;
 }
 function formValues(){
   const out = {};
-  document.querySelectorAll('#setGrid [data-k]').forEach(el => { out[el.dataset.k] = el.classList.contains('sw') ? el.getAttribute('aria-checked') === 'true' : el.type === 'number' ? Number(el.value) : el.value; });
+  document.querySelectorAll('#setGrid [data-k]').forEach(el => { out[el.dataset.k] = settingValue(el); });
   return out;
 }
-async function loadSettings(){ SET = await api('/settings'); drawSettings(SET.settings); loadPrices().catch(err => toast(err.message, true)); }
-$('#setGrid').addEventListener('click', e => { const s = e.target.closest('.sw[data-k]'); if(s) s.setAttribute('aria-checked', String(s.getAttribute('aria-checked') !== 'true')); });
+function saveSettingsPatch(patch){
+  SETTINGS_PENDING++; SETTINGS_REVISION++;
+  $('#setSave').disabled = $('#setReset').disabled = true;
+  const save = SETTINGS_SAVE_QUEUE.then(async () => {
+    const r = await api('/settings', patch);
+    SET.settings = r.settings; SET_CUR = r.settings;
+    document.querySelectorAll('#setGrid [data-k]').forEach(el => {
+      const k = el.dataset.k;
+      if(!Object.prototype.hasOwnProperty.call(patch, k) || settingValue(el) !== patch[k]) return;
+      if(el.classList.contains('sw')) el.setAttribute('aria-checked', String(r.settings[k]));
+      else el.value = r.settings[k];
+    });
+    return r;
+  });
+  SETTINGS_SAVE_QUEUE = save.catch(() => {});
+  return save.finally(() => {
+    SETTINGS_PENDING--;
+    $('#setSave').disabled = $('#setReset').disabled = SETTINGS_PENDING > 0;
+  });
+}
+async function loadSettings(){
+  await SETTINGS_SAVE_QUEUE;
+  const revision = SETTINGS_REVISION, d = await api('/settings');
+  if(revision !== SETTINGS_REVISION || SETTINGS_PENDING) return loadSettings();
+  SET = d; drawSettings(SET.settings); showSettingsTab(SETTINGS_TAB);
+}
+$('#setGrid').addEventListener('click', async e => {
+  const s = e.target.closest('.sw[data-k]'); if(!s || s.disabled || !SET) return;
+  const before = s.getAttribute('aria-checked') === 'true';
+  s.disabled = true; s.setAttribute('aria-checked', String(!before));
+  try { await saveSettingsPatch({[s.dataset.k]: !before}); toast('设置已保存，立即生效'); }
+  catch(err){ s.setAttribute('aria-checked', String(before)); toast('保存失败：' + err.message, true); }
+  finally { s.disabled = false; }
+});
 $('#setSave').onclick = async () => {
-  try { const r = await api('/settings', formValues()); SET.settings = r.settings; drawSettings(r.settings); SET_CUR = r.settings; toast('设置已保存，立即生效'); }
+  if(!SET || SETTINGS_PENDING) return;
+  try { await saveSettingsPatch(formValues()); toast('设置已保存，立即生效'); }
   catch(err){ toast('保存失败：' + err.message, true); }
 };
-$('#setReset').onclick = () => { if(!SET) return; const d = {}; SET.schema.forEach(f => d[f.key] = f.default); drawSettings(d); toast('已填入默认值，点「保存」生效'); };
+$('#setReset').onclick = () => {
+  if(!SET || SETTINGS_PENDING) return;
+  const d = formValues(), group = SET_GROUPS.find(g => g[0] === SETTINGS_TAB);
+  if(!group) return;
+  const known = SET_GROUPS.flatMap(g => g[1]);
+  SET.schema.filter(f => group[1].includes(f.key) || SETTINGS_TAB === 'tasks' && !known.includes(f.key)).forEach(f => d[f.key] = f.default);
+  drawSettings(d); toast('已填入本页默认值，点「保存」生效');
+};
 /* ---- 模型价格 ---- */
 function priceRow(p){
   const inp = (k, v) => '<input class="in price-in" type="number" min="0" step="any" data-pk="' + k + '" value="' + esc(v) + '" aria-label="' + esc(p.model) + ' ' + {input: '输入', cached: '缓存命中', output: '输出'}[k] + '价格">';
@@ -125,6 +326,7 @@ let TAB0 = 'accounts';
 try { TAB0 = localStorage.getItem('codar-tab') || 'accounts'; } catch(e) {}
 showTab(TAB0);
 setInterval(() => load().catch(() => {}), 20000);
+setInterval(() => loadConcurrency().catch(() => {}), 2000);
 loadRate();
 setInterval(() => loadRate(), 60000);
 setInterval(() => { if(!document.querySelector('[data-page="stats"]').hidden) loadStats().catch(() => {}); }, 10000);

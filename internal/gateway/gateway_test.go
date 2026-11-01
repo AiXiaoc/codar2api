@@ -531,6 +531,7 @@ func TestRequestsWithoutSessionRotateAccounts(t *testing.T) {
 		t.Fatalf("requests without a session id stuck to one account: %v", seen)
 	}
 	seen = map[string]int{}
+	h.post(t, "/settings", M{"scheduling_strategy": "sticky"})
 	for i := 0; i < 4; i++ {
 		h.request(t, "POST", "/v1/responses", M{"model": "auto", "input": "same conversation", "prompt_cache_key": "conv-1"}, true)
 	}

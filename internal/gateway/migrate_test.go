@@ -94,7 +94,7 @@ func TestPersistenceFailuresRollBackBatchAndFailClosedRestriction(t *testing.T) 
 	if !yes(store.Get("a")["restricted"]) {
 		t.Fatal("restriction failed open after disk error")
 	}
-	if store.Pick("auto", "", map[string]bool{}, nil) != nil {
+	if picked, _ := store.Pick("auto", "", map[string]bool{}, nil); picked != nil {
 		t.Fatal("unsaved restriction permitted dispatch")
 	}
 }

@@ -2,6 +2,13 @@
 /* 公共：选择器、格式化、图标、请求封装、页签、弹窗、公告 */
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+function requestModelLabel(row){
+  const requested = typeof row.requested_model === 'string' ? row.requested_model : String(row.model == null ? '-' : row.model);
+  const original = '<span class="model-requested">' + esc(requested) + '</span>';
+  if(typeof row.response_model !== 'string' || row.response_model === requested) return original;
+  return original + ' -&gt; <span class="model-returned">' + esc(row.response_model === '' ? '（空）' : row.response_model)
+    + '</span> <span class="muted small">（返回模型不一致）</span>';
+}
 const fmt = ts => ts ? new Date(ts * 1000).toLocaleString('zh-CN', {hour12: false}) : '-';
 const fmtS = ts => ts ? new Date(ts * 1000).toLocaleString('zh-CN', {hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '-';
 const fmtT = ts => ts ? new Date(ts * 1000).toLocaleString('zh-CN', {hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'}) : '-';

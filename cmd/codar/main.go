@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,17 +24,30 @@ func env(key, fallback string) string {
 	}
 	return fallback
 }
+
+func panelURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://127.0.0.1:8801/"
+	}
+	if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
+}
 func run() error {
 	var cfg gateway.Config
-	var version bool
+	var version, allowRemoteManagement bool
 	var oldDir, hubProxies string
-	flag.StringVar(&cfg.Addr, "addr", env("CODAR_ADDR", "127.0.0.1:8801"), "HTTP listen address")
+	flag.StringVar(&cfg.Addr, "addr", env("CODAR_ADDR", "0.0.0.0:8801"), "HTTP listen address")
+	flag.BoolVar(&allowRemoteManagement, "allow-remote-management", env("CODAR_ALLOW_REMOTE_MANAGEMENT", "true") == "true", "initial remote management setting (saved panel setting takes precedence)")
 	flag.StringVar(&cfg.DataDir, "data-dir", env("CODAR_DATA_DIR", "data"), "persistent data directory")
 	flag.BoolVar(&cfg.RequestDiagnostics, "request-diagnostics", env("CODAR_REQUEST_DIAGNOSTICS", "") == "true", "record redacted model request diagnostics locally")
 	flag.StringVar(&oldDir, "import-python", "", "copy a Python Codar data directory into a new empty data directory and exit")
 	flag.StringVar(&hubProxies, "import-hub-proxies", "", "import Codar bindings from a Hub proxies.json with --import-python")
 	flag.BoolVar(&version, "version", false, "print version and exit")
 	flag.Parse()
+	cfg.AllowRemoteManagement = &allowRemoteManagement
 	if version {
 		fmt.Println("Codar2API " + gateway.Version)
 		return nil
@@ -76,7 +90,8 @@ func run() error {
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
-		log.Printf("Codar2API %s listening on http://%s", gateway.Version, cfg.Addr)
+		log.Printf("Codar2API %s 管理面板：%s", gateway.Version, panelURL(cfg.Addr))
+		log.Printf("监听地址：%s", cfg.Addr)
 		done <- server.ListenAndServe()
 	}()
 	select {
