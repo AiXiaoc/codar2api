@@ -158,19 +158,29 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 		req.Header.Set("Authorization", "Bearer "+text(account["token"]))
 	}
 	detail := detailFor(ctx)
-	var attempt *detailAttempt
-	if detail != nil && chat {
-		attempt = detail.startAttempt(req, requestBytes)
-	}
-	resp, e := a.proxies.Do(req, route)
-	if e != nil {
+	observe := func(req *http.Request, route Route, _ int) func(*http.Response, error) {
+		var attempt *detailAttempt
 		if detail != nil && chat {
-			detail.errorAttempt(attempt, e)
+			attempt = detail.startAttempt(req, requestBytes)
+			attempt.proxy = route
 		}
-		return nil, &UpstreamError{Status: 0, Message: e.Error()}
+		return func(resp *http.Response, err error) {
+			if detail != nil && chat {
+				if err != nil {
+					detail.errorAttempt(attempt, err)
+				} else {
+					detail.responseAttempt(attempt, resp)
+				}
+			}
+		}
 	}
-	if detail != nil && chat {
-		detail.responseAttempt(attempt, resp)
+	policy := proxyConnectPolicy{}
+	if chat || u != nil && u.Path == "/v1/codar/models" {
+		policy = proxyPolicy(a.store.Settings())
+	}
+	resp, route, e := a.proxies.doWithPolicy(req, route, policy, observe)
+	if e != nil {
+		return nil, &UpstreamError{Status: 0, Message: e.Error()}
 	}
 	defer resp.Body.Close()
 	raw, e := io.ReadAll(io.LimitReader(resp.Body, 4<<20+1))
@@ -218,16 +228,41 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 func (a *App) catalog(ctx context.Context, force bool) ([]any, error) {
 	a.catalogMu.Lock()
 	defer a.catalogMu.Unlock()
+	route, e := a.proxies.CatalogRoute()
+	if e != nil {
+		return nil, e
+	}
+	source := ""
+	if route.ID != 0 {
+		source = fmt.Sprintf("%d:%s", route.ID, route.Fingerprint)
+	}
 	a.store.mu.RLock()
 	models, at := clone(a.store.catalog), a.store.catalogAt
+	if a.store.catalogSource != source {
+		models, at = nil, 0
+	}
 	a.store.mu.RUnlock()
 	if !force && len(models) > 0 && now()-at < num(a.store.Settings()["catalog_ttl_minutes"])*60 {
 		return models, nil
 	}
-	out, e := a.requestJSON(ctx, "GET", a.cfg.APIBase+"/v1/codar/models", nil, nil, nil)
+	out, e := a.requestJSON(ctx, "GET", a.cfg.APIBase+"/v1/codar/models", nil, &route, nil)
 	if e != nil {
 		return models, e
 	}
+	flat := catalogModels(out)
+	t := now()
+	if e = writeJSON(filepath.Join(a.cfg.DataDir, "catalog.json"), M{"at": t, "models": flat, "source": source}); e != nil {
+		return models, e
+	}
+	a.store.mu.Lock()
+	a.store.catalog = flat
+	a.store.catalogAt = t
+	a.store.catalogSource = source
+	a.store.mu.Unlock()
+	return clone(flat), nil
+}
+
+func catalogModels(out M) []any {
 	flat := []any{}
 	for _, v := range arr(out["data"]) {
 		m := obj(v)
@@ -256,15 +291,7 @@ func (a *App) catalog(ctx context.Context, force bool) ([]any, error) {
 		}
 		return text(x["id"]) < text(y["id"])
 	})
-	t := now()
-	if e = writeJSON(filepath.Join(a.cfg.DataDir, "catalog.json"), M{"at": t, "models": flat}); e != nil {
-		return models, e
-	}
-	a.store.mu.Lock()
-	a.store.catalog = flat
-	a.store.catalogAt = t
-	a.store.mu.Unlock()
-	return clone(flat), nil
+	return flat
 }
 func profileView(p M) M {
 	out := M{}
@@ -344,10 +371,16 @@ func (a *App) refreshAt(ctx context.Context, acc M, parts []string, pinned *Rout
 			out, e = call("GET", a.cfg.APIBase+"/api/user/self", nil)
 			if e == nil {
 				p := obj(out["data"])
-				if text(p["id"]) != "" && text(p["id"]) != text(acc["uid"]) {
+				knownID := str(obj(acc["profile"])["id"], text(acc["uid"]))
+				if text(p["id"]) == "" && text(p["username"]) == "" {
+					e = errors.New("上游未返回账号身份，未更新")
+				} else if text(p["username"]) != "" && text(acc["username"]) != "" && text(p["username"]) != text(acc["username"]) {
+					e = errors.New("上游账号身份变化，未更新")
+				} else if !yes(acc["profile_pending"]) && text(p["id"]) != "" && text(p["id"]) != knownID {
 					e = errors.New("上游账号身份变化，未更新")
 				} else {
 					acc["profile"] = profileView(p)
+					acc["profile_pending"] = false
 					acc["username"] = str(p["username"], text(acc["username"]))
 					acc["display_name"] = str(p["display_name"], text(acc["display_name"]))
 				}

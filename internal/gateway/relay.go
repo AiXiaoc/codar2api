@@ -107,6 +107,11 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 	}
 	settings := a.store.Settings()
 	passthrough := yes(settings["auto_passthrough"])
+	blockRestrictedRequest := yes(settings["restricted_request_block"])
+	requestID := ""
+	if blockRestrictedRequest {
+		requestID = requestFingerprint(r.URL.Path, p)
+	}
 	bodyChanged := transformIdentityPrompts(r.URL.Path, p, yes(settings["dsh_identity_rewrite"]), yes(settings["identity_first_line_fill"]))
 	isStream := yes(p["stream"])
 	if !passthrough && r.URL.Path == "/v1/chat/completions" && isStream {
@@ -210,6 +215,10 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			return
 		}
 		var next M
+		if blockRestrictedRequest && a.requestBlocks.Has(requestID) {
+			fail(http.StatusForbidden, "该请求曾触发 403 账号受限，已列入请求黑名单；可在设置 → 调度与换号中清空黑名单")
+			return
+		}
 		var pickErr error
 		if explicit != nil {
 			next, pickErr = a.store.ReserveManual(text(explicit["uid"]), model, skip)
@@ -294,22 +303,38 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		}
 		trace := diagnosticFor(r)
 		detail := detailFor(r.Context())
-		var detailAttempt *detailAttempt
-		if detail != nil {
-			detailAttempt = detail.startAttempt(req, raw)
-		}
 		if trace != nil {
 			trace.secrets = append(trace.secrets, text(chosen["token"]))
-			trace.record("upstream_request", M{"attempt": attempt + 1, "account_uid": uid, "api_key_name": key["name"], "url": req.URL.Scheme + "://" + req.URL.Host + req.URL.Path, "headers": diagnosticHeaders(req.Header), "body": p, "json_bytes": len(raw), "json_sha256": digest(string(raw)), "route_id": route.ID})
 		}
-		resp, e := a.proxies.Do(req, route)
-		if e != nil {
+		observe := func(req *http.Request, route Route, proxyAttempt int) func(*http.Response, error) {
+			var capture *detailAttempt
 			if detail != nil {
-				detail.errorAttempt(detailAttempt, e)
+				capture = detail.startAttempt(req, raw)
+				capture.proxy = route
 			}
 			if trace != nil {
-				trace.record("upstream_network_error", M{"attempt": attempt + 1, "error": e.Error()})
+				trace.record("upstream_request", M{"attempt": attempt + 1, "proxy_attempt": proxyAttempt, "account_uid": uid, "api_key_name": key["name"], "url": req.URL.Scheme + "://" + req.URL.Host + req.URL.Path, "headers": diagnosticHeaders(req.Header), "body": p, "json_bytes": len(raw), "json_sha256": digest(string(raw)), "route_id": route.ID})
 			}
+			return func(resp *http.Response, err error) {
+				if err != nil {
+					if detail != nil {
+						detail.errorAttempt(capture, err)
+					}
+					if trace != nil {
+						trace.record("upstream_network_error", M{"attempt": attempt + 1, "proxy_attempt": proxyAttempt, "route_id": route.ID, "error": err.Error()})
+					}
+					return
+				}
+				if detail != nil {
+					detail.responseAttempt(capture, resp)
+				}
+				if trace != nil {
+					trace.record("upstream_response", M{"attempt": attempt + 1, "proxy_attempt": proxyAttempt, "route_id": route.ID, "status": resp.StatusCode, "headers": diagnosticHeaders(resp.Header)})
+				}
+			}
+		}
+		resp, route, e := a.proxies.doWithPolicy(req, route, proxyPolicy(settings), observe)
+		if e != nil {
 			cancel()
 			if r.Context().Err() != nil {
 				row["error"] = "客户端已取消请求"
@@ -321,12 +346,6 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 			a.noteFailure(chosen, 0, []byte(lastError))
 			failTry(0, lastError)
 			continue
-		}
-		if detail != nil {
-			detail.responseAttempt(detailAttempt, resp)
-		}
-		if trace != nil {
-			trace.record("upstream_response", M{"attempt": attempt + 1, "status": resp.StatusCode, "headers": diagnosticHeaders(resp.Header)})
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, e := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
@@ -362,7 +381,12 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 					continue
 				}
 			}
-			if retryable(lastStatus, body) {
+			restrictedRequest := blockRestrictedRequest && lastStatus == http.StatusForbidden && restriction(d) != ""
+			if restrictedRequest {
+				a.noteFailure(chosen, lastStatus, body)
+				a.logPersistence(a.requestBlocks.Add(requestID, r.URL.Path, model, restriction(d)))
+			}
+			if !restrictedRequest && retryable(lastStatus, body) {
 				a.noteFailure(chosen, lastStatus, body)
 				failTry(lastStatus, lastError)
 				continue

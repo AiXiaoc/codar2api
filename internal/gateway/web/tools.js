@@ -50,7 +50,7 @@ $('#importFile').onchange = e => {
 $('#importGo').onclick = async () => {
   if(!IMPORT_BODY) return;
   const b = $('#importGo'); b.disabled = true; b.textContent = '导入中…';
-  $('#importMsg').innerHTML = spinner('正在逐个校验并导入，账号多时需要一会儿…');
+  $('#importMsg').innerHTML = spinner('正在直接导入账号…');
   try {
     const r = await api('/accounts/import', IMPORT_BODY);
     const line = x => '<tr><td class="num">' + x.index + '</td><td class="mono">' + esc(x.token_masked) + '</td><td>' + (x.ok ? '<b>' + esc(x.username) + '</b>' : '<span class="muted">-</span>') + '</td><td>'
@@ -62,18 +62,23 @@ $('#importGo').onclick = async () => {
   } catch(err){ $('#importMsg').innerHTML = '<div class="notice bad"><b>导入失败</b>：' + esc(err.message) + '</div>'; b.disabled = false; b.textContent = '重试'; }
 };
 /* ---- 调用测试：选模型、写提示词，经这个账号的出口发一次非流式请求 ---- */
-let CALL_UID = '', CALL_MODELS = null, CALL_BUSY = false;
+let CALL_UID = '', CALL_GENERATION = 0, CALL_BUSY = false;
 async function openCall(a){
+  const generation = ++CALL_GENERATION;
   CALL_UID = a.uid;
   $('#callTitle').textContent = '调用 · ' + (a.username || a.uid);
-  $('#callPrompt').value = 'Hi'; $('#callOut').innerHTML = ''; $('#callGo').disabled = false;
+  $('#callPrompt').value = 'Hi'; $('#callOut').innerHTML = ''; $('#callGo').disabled = true;
   const sel = $('#callModel');
   sel.innerHTML = '<option>正在读取模型…</option>'; sel.disabled = true;
   openModal('#callModal', '#callPrompt');
-  try { if(!CALL_MODELS) CALL_MODELS = (await api('/catalog')).models; }
-  catch(err){ CALL_MODELS = null; $('#callOut').innerHTML = '<div class="notice bad">读取模型目录失败：' + esc(err.message) + '</div>'; }
-  if(CALL_UID !== a.uid) return;
-  const free = a.free_models || [], list = (CALL_MODELS || []).map(m => ({id: m.id, name: m.name || m.id}));
+  let models = [];
+  try { models = (await api('/accounts/catalog?uid=' + encodeURIComponent(a.uid))).models || []; }
+  catch(err){
+    if(generation !== CALL_GENERATION) return;
+    $('#callOut').innerHTML = '<div class="notice bad">读取模型目录失败：' + esc(err.message) + '</div>';
+  }
+  if(generation !== CALL_GENERATION || CALL_UID !== a.uid) return;
+  const free = a.free_models || [], list = models.map(m => ({id: m.id, name: m.name || m.id}));
   free.filter(id => !list.some(m => m.id === id)).forEach(id => list.push({id, name: id}));
   list.sort((x, y) => free.includes(y.id) - free.includes(x.id));
   let last = ''; try { last = localStorage.getItem('codar-call-model') || ''; } catch(e) {}
@@ -81,6 +86,7 @@ async function openCall(a){
   sel.innerHTML = list.map(m => '<option value="' + esc(m.id) + '"' + (m.id === pick ? ' selected' : '') + '>' + (free.includes(m.id) ? '免费 · ' : '') + esc(m.name) + (m.name !== m.id ? '（' + esc(m.id) + '）' : '') + '</option>').join('')
     || '<option value="auto">auto</option>';
   sel.disabled = false;
+  $('#callGo').disabled = false;
 }
 $('#callForm').onsubmit = async e => {
   e.preventDefault(); if(CALL_BUSY || !CALL_UID) return;
@@ -99,4 +105,4 @@ $('#callForm').onsubmit = async e => {
   finally { CALL_BUSY = false; $('#callGo').disabled = false; }
 };
 $('#callPrompt').addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); $('#callForm').requestSubmit(); } });
-MODAL_CLOSE['#callModal'] = id => { CALL_UID = ''; closeModal(id); };
+MODAL_CLOSE['#callModal'] = id => { CALL_UID = ''; CALL_GENERATION++; closeModal(id); };

@@ -1,12 +1,18 @@
 ARG GO_IMAGE=golang:1.26.4-alpine
 ARG RUNTIME_IMAGE=alpine:3.22
 FROM ${GO_IMAGE} AS build
-ARG VERSION=0.1.2
+# Unset or empty VERSION preserves the version defined in the Go source.
+ARG VERSION
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/codar-gateway/codar-gateway/internal/gateway.Version=${VERSION}" -o /out/codar ./cmd/codar
+RUN set -eu; \
+    ldflags="-s -w"; \
+    if [ -n "${VERSION:-}" ]; then \
+        ldflags="$ldflags -X github.com/codar-gateway/codar-gateway/internal/gateway.Version=${VERSION}"; \
+    fi; \
+    CGO_ENABLED=0 go build -trimpath -ldflags="$ldflags" -o /out/codar ./cmd/codar
 
 FROM ${RUNTIME_IMAGE}
 RUN apk add --no-cache ca-certificates tzdata && addgroup -S codar && adduser -S -G codar codar && mkdir /data && chown codar:codar /data

@@ -155,14 +155,21 @@ var schedulingOptions = []M{
 	{"value": "least_connections", "label": "最小连接"},
 }
 
+var requestDebugOptions = []M{
+	{"value": "all", "label": "全部请求"},
+	{"value": "success", "label": "正常请求"},
+	{"value": "errors", "label": "错误请求"},
+}
+
 var schema = []settingSpec{
 	{"use_codar_ua", "bool", true, nil, nil, "启用自定义 UA", "关闭后 API 请求沿用调用方 UA，面板测试和模型目录使用 Go HTTP 客户端 UA。"},
 	{"codar_ua", "string", defaultCodarUA, nil, 1024, "自定义 UA", "开启后模型请求、模型目录和面板测试使用右侧 UA；关闭后 API 沿用调用方 UA。"},
 	{"auto_passthrough", "bool", true, nil, nil, "自动透传", "保留原始正文、查询参数和普通请求头，仍按启用的 UA 和提示词规则处理；不转发本地鉴权、Cookie 和连接控制头。"},
-	{"detailed_debug", "bool", false, nil, nil, "启用详细调试日志", "记录失败请求的完整请求头、请求体和响应，包含 API Key、账号令牌等敏感信息；仅管理员可查看。"},
+	{"detailed_debug", "bool", false, nil, nil, "启用请求调试日志", "记录所选范围内请求的完整请求头、请求体和响应；内容可能包含凭证与对话。"},
+	{"request_debug_scope", "select", "errors", nil, nil, "请求调试日志范围", "全部请求、正常请求或错误请求；错误请求包括失败重试后成功的请求。"},
 	{"allow_remote_management", "bool", true, nil, nil, "允许远程访问", "开启后允许从其他主机访问管理页面和管理接口，仍需管理员密钥；关闭后仅允许本机管理，API Key 调用不受影响。"},
-	{"dsh_identity_rewrite", "bool", true, nil, nil, "DSH身份提示词替换", "替换各模型接口系统或开发者提示词开头的固定身份描述，保留其余内容。"},
-	{"identity_first_line_fill", "bool", false, nil, nil, "身份提示词首行填充", "在系统或开发者提示词首行开头添加一个点和一个零宽空格（U+200B）。"},
+	{"dsh_identity_rewrite", "bool", true, nil, nil, "身份提示词替换", "在系统或开发者提示词首行加入 Codar 身份描述，保留原有内容。"},
+	{"identity_first_line_fill", "bool", true, nil, nil, "身份提示词首行填充", "在系统或开发者提示词首行开头添加一个点、一个零宽空格（U+200B）和字母 X。"},
 	{"auto_claim", "bool", true, nil, nil, "自动领取免费模型活动", "导入与后台检查时自动领取可参加的免费模型活动。"},
 	{"allow_general_balance", "bool", true, nil, nil, "允许使用通用余额", "Agent 余额用完后允许使用通用余额。"},
 	{"auto_renew_token", "bool", true, nil, nil, "令牌自动续期", "令牌接近到期时自动续期。"},
@@ -172,8 +179,11 @@ var schema = []settingSpec{
 	{"cooldown_balance_seconds", "int", 600, 0, 86400, "余额不足冷却（秒）", "上游返回 402 或余额不足时暂停收费模型。"},
 	{"cooldown_error_seconds", "int", 30, 0, 3600, "上游错误冷却（秒）", "网络错误或 5xx 时暂停该账号；503「No available channel」直接返回、不冷却。"},
 	{"max_attempts", "int", 3, 1, 10, "单次请求最多尝试账号数", "收到响应前的可重试错误切换到其他可用账号。"},
+	{"proxy_connect_retry", "bool", false, nil, nil, "代理连接失败重试", "模型转发、调用测试和模型列表读取时，代理连接建立失败后使用原代理重试 1 次；上游 HTTP 错误、已发送请求后的中断和客户端取消不触发。"},
+	{"proxy_connect_switch", "bool", false, nil, nil, "失败后切换其他代理", "连接失败且原代理重试用尽后，同一账号临时尝试代理池中其他已启用、未封控的不同代理；未开启原代理重试时直接切换。固定代理和轮询代理均支持，不修改绑定、不回退直连；全部失败后沿用换账号逻辑。"},
 	{"ip_block", "bool", true, nil, nil, "IP 封控时停止调度该 IP", "上游返回 403 拦截时把当前出口 IP 标记为封控，不再调度，换其他出口的账号重试。"},
-	{"scheduling_strategy", "select", "round_robin", nil, nil, "调度策略", "轮询依次选号；加权轮询按账号权重分配；粘性优先沿用同一会话账号；最小连接优先使用当前并发最少的账号。所有策略均跳过已达并发上限的账号。"},
+	{"restricted_request_block", "bool", false, nil, nil, "403 账号受限时拉黑该请求", "遇到明确的 403 account_restricted 时标记账号受限并停止换号，将相同接口与完整 JSON 内容的请求加入黑名单，后续不再转发给任何账号。关闭后暂停拦截，黑名单保留至手动清空。"},
+	{"scheduling_strategy", "select", "round_robin", nil, nil, "调度策略", ""},
 	{"refresh_minutes", "int", 30, 5, 1440, "余额 / 活动刷新间隔（分钟）", "完整刷新账号信息的间隔。"},
 	{"free_check_minutes", "int", 60, 5, 1440, "免费活动检查间隔（分钟）", "检查免费活动与自动领取的间隔。"},
 	{"catalog_ttl_minutes", "int", 10, 1, 1440, "模型目录缓存（分钟）", "后台缓存上游模型目录。"},
@@ -199,14 +209,18 @@ func cleanSettings(p M, base M) (M, error) {
 			}
 		} else if s.Type == "select" {
 			valid := false
-			for _, option := range schedulingOptions {
+			options := schedulingOptions
+			if s.Key == "request_debug_scope" {
+				options = requestDebugOptions
+			}
+			for _, option := range options {
 				if v == option["value"] {
 					valid = true
 					break
 				}
 			}
 			if !valid {
-				return nil, errors.New("请选择有效的调度策略")
+				return nil, fmt.Errorf("请选择有效的%s", s.Label)
 			}
 		} else if s.Type == "string" {
 			value, ok := v.(string)
@@ -239,18 +253,19 @@ func cleanSettings(p M, base M) (M, error) {
 }
 
 type Store struct {
-	mu        sync.RWMutex
-	dir       string
-	accounts  []M
-	settings  M
-	catalog   []any
-	catalogAt float64
-	prices    M
-	sticky    map[string]string
-	cursor    int
-	inflight  map[string]int
-	weights   map[string]int64
-	dirty     bool
+	mu            sync.RWMutex
+	dir           string
+	accounts      []M
+	settings      M
+	catalog       []any
+	catalogAt     float64
+	catalogSource string
+	prices        M
+	sticky        map[string]string
+	cursor        int
+	inflight      map[string]int
+	weights       map[string]int64
+	dirty         bool
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -289,6 +304,7 @@ func newStore(dir string, allowRemoteManagement bool) (*Store, error) {
 	}
 	s.catalog = arr(cat["models"])
 	s.catalogAt = num(cat["at"])
+	s.catalogSource = text(cat["source"])
 	if err := loadOptional(filepath.Join(dir, "prices.json"), &s.prices); err != nil {
 		return nil, err
 	}
@@ -468,8 +484,16 @@ func (s *Store) Restrict(uid, reason string) error {
 }
 func (s *Store) Batch(p M) (M, error) {
 	action := text(p["action"])
-	if action != "enable" && action != "disable" && action != "delete" && action != "clear_restriction" {
+	if action != "enable" && action != "disable" && action != "delete" && action != "clear_restriction" && action != "set_concurrency" {
 		return nil, errors.New("未知的批量操作")
+	}
+	limit := 0
+	if action == "set_concurrency" {
+		var err error
+		limit, err = schedulingInteger(p["max_concurrency"], 0, 1000000)
+		if err != nil {
+			return nil, fmt.Errorf("账号最大并发数%s", err)
+		}
 	}
 	if a, ok := p["all"]; ok {
 		if _, ok = a.(bool); !ok {
@@ -526,6 +550,11 @@ func (s *Store) Batch(p M) (M, error) {
 		}
 		b := clone(a)
 		switch action {
+		case "set_concurrency":
+			if int(num(b["max_concurrency"])) != limit {
+				changed++
+			}
+			b["max_concurrency"] = limit
 		case "enable":
 			if !yes(b["enabled"]) {
 				changed++
@@ -638,8 +667,11 @@ func modelUnavailable(a M, model string, settings M, manual bool) string {
 	if num(a["cooldown_until"]) > t && !(a["cooldown_kind"] == "balance" && isFree) {
 		return fmt.Sprintf("冷却中（%s，还有 %d 秒）", str(a["cooldown_reason"], "上游错误"), int(num(a["cooldown_until"])-t))
 	}
-	if model != "" && !isFree {
+	if !isFree {
 		if bal, ok := spendable(a, yes(settings["allow_general_balance"])); ok && bal <= 0 {
+			if model == "" {
+				return "余额不足，已暂停调度"
+			}
 			return "余额不足，该模型不在免费模型内"
 		}
 	}

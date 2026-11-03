@@ -23,19 +23,19 @@ function harness(){
       dataset:{k:key}, type, value:String(value), disabled:false,
       classList:{contains:name => name === 'sw' && type === 'switch'},
       getAttribute:name => attrs[name], setAttribute:(name, value) => { attrs[name] = value; },
-      closest:selector => selector === '.sw[data-k]' && type === 'switch' ? el : null
+      closest:selector => selector === '.sw[data-k]' && type === 'switch' || selector === 'select[data-k="request_debug_scope"]' && type === 'select' ? el : null
     };
     controls.push(el);
     return el;
   };
   const initial = {
     use_codar_ua:true, auto_passthrough:true, dsh_identity_rewrite:true,
-    identity_first_line_fill:false, detailed_debug:false, allow_remote_management:true,
-    auto_sign:true, auto_claim:true, auto_renew_token:true, ip_block:true, allow_general_balance:true,
-    codar_ua:'saved agent', max_attempts:3, scheduling_strategy:'round_robin'
+    identity_first_line_fill:false, detailed_debug:false, request_debug_scope:'errors', allow_remote_management:true,
+    auto_sign:true, auto_claim:true, auto_renew_token:true, ip_block:true, restricted_request_block:false, allow_general_balance:true,
+    codar_ua:'saved agent', max_attempts:3, scheduling_strategy:'round_robin', proxy_connect_retry:false, proxy_connect_switch:false
   };
   Object.entries(initial).forEach(([key, value]) => addControl(key, value,
-    typeof value === 'boolean' ? 'switch' : typeof value === 'number' ? 'number' : 'text'));
+    key === 'request_debug_scope' ? 'select' : typeof value === 'boolean' ? 'switch' : typeof value === 'number' ? 'number' : 'text'));
   let saved = {...initial};
   const context = vm.createContext({
     $:element, SET_CUR:{}, localStorage:{getItem:() => null, setItem:() => {}},
@@ -52,6 +52,7 @@ function harness(){
     calls, messages, context, element,
     control:key => controls.find(el => el.dataset.k === key),
     click:key => element('#setGrid').listeners.click({target:controls.find(el => el.dataset.k === key)}),
+    change:key => element('#setGrid').listeners.change({target:controls.find(el => el.dataset.k === key)}),
     save:() => element('#setSave').onclick(),
     resolve(index, normalized = {}){
       if(calls[index].patch !== undefined) saved = {...saved, ...calls[index].patch, ...normalized};
@@ -63,7 +64,7 @@ function harness(){
 
 test('every settings switch saves only its own value without submitting text drafts', async () => {
   for(const key of ['use_codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill',
-    'detailed_debug', 'allow_remote_management', 'auto_sign', 'auto_claim', 'auto_renew_token', 'ip_block', 'allow_general_balance']){
+    'detailed_debug', 'allow_remote_management', 'auto_sign', 'auto_claim', 'auto_renew_token', 'ip_block', 'restricted_request_block', 'allow_general_balance', 'proxy_connect_retry', 'proxy_connect_switch']){
     const h = harness(), control = h.control(key), before = control.getAttribute('aria-checked') === 'true';
     h.control('codar_ua').value = 'unsaved agent';
     h.control('max_attempts').value = '5';
@@ -85,6 +86,46 @@ test('every settings switch saves only its own value without submitting text dra
     assert.equal(h.current().codar_ua, 'saved agent');
     assert.equal(h.calls.length, 1, 'saving must not require a follow-up request');
   }
+});
+
+test('request blocklist can be cleared and failed clears remain retryable', async () => {
+  const h = harness();
+  vm.runInContext('SET.request_blocklist_count = 2', h.context);
+  const button = {disabled:false, textContent:'清空黑名单（2）'};
+  const event = {target:{closest:selector => selector === '[data-clear-request-blocklist]' ? button : null}};
+  let clearing = h.element('#setGrid').listeners.click(event);
+  assert.equal(button.disabled, true);
+  assert.equal(h.calls[0].url, '/request-blocklist/clear');
+  h.calls[0].reject(new Error('disk unavailable'));
+  await clearing;
+  assert.equal(button.disabled, false);
+  assert.equal(vm.runInContext('SET.request_blocklist_count', h.context), 2);
+  clearing = h.element('#setGrid').listeners.click(event);
+  h.calls[1].resolve({ok:true});
+  await clearing;
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, '清空黑名单（0）');
+  assert.equal(vm.runInContext('SET.request_blocklist_count', h.context), 0);
+});
+
+test('request debug scope saves immediately and restores on failure', async () => {
+  const h = harness(), scope = h.control('request_debug_scope');
+  scope.value = 'all';
+  const saving = h.change('request_debug_scope');
+  await flush();
+  assert.equal(scope.disabled, true);
+  assert.deepEqual(h.calls[0].patch, {request_debug_scope:'all'});
+  h.resolve(0);
+  await saving;
+  assert.equal(scope.disabled, false);
+  assert.equal(h.current().request_debug_scope, 'all');
+  scope.value = 'success';
+  const failing = h.change('request_debug_scope');
+  await flush();
+  h.calls[1].reject(new Error('disk unavailable'));
+  await failing;
+  assert.equal(scope.value, 'all');
+  assert.equal(h.current().request_debug_scope, 'all');
 });
 
 test('rapid clicks are serialized and cannot overwrite another switch', async () => {

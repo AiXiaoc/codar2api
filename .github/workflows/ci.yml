@@ -40,3 +40,25 @@ jobs:
         with:
           name: codar2api-${{ matrix.target }}
           path: dist/
+  docker-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify Docker source version and explicit override
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(go run ./cmd/codar --version)"
+
+          docker build --target build -t codar2api:version-default .
+          test "$(docker run --rm --network none --entrypoint /out/codar codar2api:version-default --version)" = "$expected"
+
+          docker build --target build --build-arg VERSION= -t codar2api:version-empty .
+          test "$(docker run --rm --network none --entrypoint /out/codar codar2api:version-empty --version)" = "$expected"
+
+          docker build --target build --build-arg VERSION=0.0.0-ci -t codar2api:version-override .
+          test "$(docker run --rm --network none --entrypoint /out/codar codar2api:version-override --version)" = "Codar2API 0.0.0-ci"

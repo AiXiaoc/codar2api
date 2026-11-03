@@ -35,6 +35,62 @@ func lastDetail(t *testing.T, h *harness) (M, M) {
 	return row, obj(decode(t, body)["detail"])
 }
 
+func TestRequestDebugScopeFiltersAndPersists(t *testing.T) {
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		var p M
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		if p["model"] == "failure" {
+			jsonResponse(w, 403, M{"error": "failed"})
+			return
+		}
+		jsonResponse(w, 200, M{"choices": []any{}})
+	})
+	h.add(t, "a", nil)
+	if got := h.app.store.Settings()["request_debug_scope"]; got != "errors" {
+		t.Fatalf("unexpected default scope: %v", got)
+	}
+	resp, _ := h.request(t, "POST", "/settings", M{"request_debug_scope": "invalid"}, false)
+	if resp.StatusCode != 400 || h.app.store.Settings()["request_debug_scope"] != "errors" {
+		t.Fatal("invalid scope was accepted")
+	}
+	for _, tc := range []struct {
+		scope          string
+		captureSuccess bool
+		captureFailure bool
+	}{
+		{"errors", false, true},
+		{"success", true, false},
+		{"all", true, true},
+	} {
+		h.post(t, "/settings", M{"detailed_debug": true, "request_debug_scope": tc.scope})
+		for _, request := range []struct {
+			model   string
+			capture bool
+		}{
+			{"success", tc.captureSuccess},
+			{"failure", tc.captureFailure},
+		} {
+			resp, _ := h.request(t, "POST", "/v1/chat/completions", M{"model": request.model}, true)
+			h.app.usage.mu.Lock()
+			row := clone(h.app.usage.rows[len(h.app.usage.rows)-1])
+			h.app.usage.mu.Unlock()
+			id := text(row["diagnostic_id"])
+			if (id != "") != request.capture {
+				t.Fatalf("scope=%s model=%s status=%d captured=%v", tc.scope, request.model, resp.StatusCode, id != "")
+			}
+			if id != "" {
+				if _, err := os.Stat(filepath.Join(h.app.cfg.DataDir, "request-details", id+".json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	reloaded, err := NewStore(h.app.cfg.DataDir)
+	if err != nil || reloaded.Settings()["request_debug_scope"] != "all" {
+		t.Fatalf("scope did not persist: %v", err)
+	}
+}
+
 func TestDetailCaptureFailuresAndSuccessfulRetry(t *testing.T) {
 	large := strings.Repeat("L", (1<<20)+200)
 	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {

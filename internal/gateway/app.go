@@ -20,7 +20,7 @@ import (
 //go:embed web/* defaults.json
 var assets embed.FS
 
-var Version = "0.1.3"
+var Version = "0.1.4"
 
 type Config struct {
 	Addr, DataDir, Password, APIBase, PayBase, WebBase, CheckURL, LocalConfig string
@@ -86,11 +86,13 @@ type App struct {
 	rateMu        sync.Mutex
 	rate          M
 	loginMu       sync.Mutex
+	importMu      sync.Mutex
 	flows         map[string]M
 	qr            map[string]M
 	priceDefaults M
 	diagnostics   *requestDiagnosticLog
 	updates       *releaseChecker
+	requestBlocks *requestBlocklist
 }
 
 func New(cfg Config) (*App, string, error) {
@@ -111,8 +113,13 @@ func New(cfg Config) (*App, string, error) {
 	if e != nil {
 		return nil, "", e
 	}
+	requestBlocks, e := newRequestBlocklist(cfg.DataDir)
+	if e != nil {
+		return nil, "", e
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{cfg: cfg, store: store, auth: auth, proxies: proxies, usage: usage, ctx: ctx, cancel: cancel, gates: make(chan struct{}, cfg.MaxConcurrent), ann: M{"items": []any{}}, rate: M{}, flows: map[string]M{}, qr: map[string]M{}, updates: newReleaseChecker()}
+	a.requestBlocks = requestBlocks
 	if cfg.RequestDiagnostics {
 		a.diagnostics = &requestDiagnosticLog{path: filepath.Join(cfg.DataDir, "request-diagnostics.jsonl")}
 		log.Printf("request diagnostics enabled: %s", a.diagnostics.path)
@@ -474,7 +481,7 @@ func (a *App) logPersistence(err error) {
 	}
 }
 func (a *App) saveBusiness(v M) error {
-	fields := []string{"token", "username", "display_name", "profile", "balance", "free", "activities", "invite", "sign", "redeems", "renew", "refreshed_at", "free_checked_at", "token_invalid", "web_id"}
+	fields := []string{"token", "username", "display_name", "profile", "profile_pending", "balance", "free", "activities", "invite", "sign", "redeems", "renew", "refreshed_at", "free_checked_at", "token_invalid", "web_id"}
 	return a.store.Update(text(v["uid"]), func(current M) error {
 		for _, k := range fields {
 			if val, ok := v[k]; ok {

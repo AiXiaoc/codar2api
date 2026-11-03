@@ -3,9 +3,9 @@ package gateway
 import "strings"
 
 const (
-	harnessIdentity = "You are an AI agent powered by DeepSeek Harness."
-	neutralIdentity = "You are an AI coding agent."
-	identityFill    = ".\u200b"
+	codarIdentity = "You are an AI agent running on the Codar runtime."
+	legacyFill    = ".\u200b"
+	identityFill  = legacyFill + "X"
 )
 
 type identityPart struct {
@@ -44,72 +44,54 @@ func identityParts(value any, assign func(string)) []identityPart {
 	return parts
 }
 
-// transformIdentity changes only the start of a prompt. The fixed identity
-// may span adjacent text blocks; text after it stays in its original block.
+// transformIdentity adds the identity line and optional fill at the start of
+// a prompt, preserving existing text and text block metadata.
 func transformIdentity(container M, key string, rewrite, fill bool) bool {
 	value, ok := container[key]
 	if !ok {
 		return false
 	}
 	parts := identityParts(value, func(v string) { container[key] = v })
+	if len(parts) == 0 {
+		return false
+	}
 	var start strings.Builder
 	for _, part := range parts {
 		start.WriteString(part.value)
-		if start.Len() >= len(identityFill)+len(harnessIdentity) {
+		if start.Len() >= len(identityFill)+len(codarIdentity)+1 {
 			break
 		}
 	}
 	prefix := start.String()
-	if prefix == "" {
-		return false
-	}
-	hasFill := strings.HasPrefix(prefix, identityFill)
 	offset := 0
-	if hasFill {
+	if strings.HasPrefix(prefix, identityFill) {
 		offset = len(identityFill)
+	} else if strings.HasPrefix(prefix, legacyFill) {
+		offset = len(legacyFill)
+	}
+	insert := func(at int, value string) {
+		for i := range parts {
+			if at <= len(parts[i].value) {
+				parts[i].value = parts[i].value[:at] + value + parts[i].value[at:]
+				return
+			}
+			at -= len(parts[i].value)
+		}
 	}
 	changed := false
-	if rewrite && strings.HasPrefix(prefix[offset:], harnessIdentity) {
-		end := offset + len(harnessIdentity)
-		position, inserted := 0, false
-		insertedPart, insertedAt := -1, 0
-		emptied := []int{}
-		for i := range parts {
-			original := parts[i].value
-			partEnd := position + len(original)
-			if partEnd > offset && position < end {
-				from := max(0, offset-position)
-				to := min(len(original), end-position)
-				replacement := ""
-				if !inserted {
-					replacement, inserted = neutralIdentity, true
-					insertedPart, insertedAt = i, from
-				}
-				parts[i].value = original[:from] + replacement + original[to:]
-				if original != "" && parts[i].value == "" {
-					emptied = append(emptied, i)
-				}
-			}
-			position = partEnd
-			if position >= end {
-				break
-			}
-		}
-		// Some APIs reject empty text blocks. Keep formerly nonempty blocks
-		// nonempty by moving trailing replacement characters into them.
-		if n := len(emptied); n > 0 && n < len(neutralIdentity) {
-			cut := insertedAt + len(neutralIdentity) - n
-			first := parts[insertedPart].value
-			parts[insertedPart].value = first[:cut] + first[cut+n:]
-			for i, index := range emptied {
-				parts[index].value = neutralIdentity[len(neutralIdentity)-n+i : len(neutralIdentity)-n+i+1]
-			}
-		}
+	if rewrite && !strings.HasPrefix(prefix[offset:], codarIdentity+"\n") {
+		insert(offset, codarIdentity+"\n")
 		changed = true
 	}
-	if fill && !hasFill {
-		parts[0].value = identityFill + parts[0].value
-		changed = true
+	if fill {
+		switch offset {
+		case 0:
+			insert(0, identityFill)
+			changed = true
+		case len(legacyFill):
+			insert(offset, "X")
+			changed = true
+		}
 	}
 	if changed {
 		for _, part := range parts {

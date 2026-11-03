@@ -27,10 +27,12 @@ type detailPart struct {
 type detailAttempt struct {
 	request, response detailPart
 	err               string
+	proxy             Route
 }
 type detailTrace struct {
 	app               *App
 	id, tempDir       string
+	scope             string
 	ts                float64
 	request, response detailPart
 	attempts          []*detailAttempt
@@ -97,7 +99,8 @@ func (t *detailTrace) spool() *os.File {
 }
 
 func (a *App) beginDetail(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, *http.Request, func()) {
-	if !yes(a.store.Settings()["detailed_debug"]) {
+	settings := a.store.Settings()
+	if !yes(settings["detailed_debug"]) {
 		return w, r, func() {}
 	}
 	dir := filepath.Join(a.cfg.DataDir, "request-details")
@@ -110,7 +113,7 @@ func (a *App) beginDetail(w http.ResponseWriter, r *http.Request) (http.Response
 		log.Printf("detail log: %v", err)
 		return w, r, func() {}
 	}
-	t := &detailTrace{app: a, id: random(16), tempDir: tmp, ts: now()}
+	t := &detailTrace{app: a, id: random(16), tempDir: tmp, ts: now(), scope: text(settings["request_debug_scope"])}
 	t.request = detailPart{method: r.Method, url: r.URL.RequestURI(), headers: r.Header.Clone(), body: t.spool()}
 	t.request.headers.Set("Host", r.Host)
 	if r.ContentLength >= 0 {
@@ -313,8 +316,17 @@ func (t *detailTrace) finish(row M) bool {
 			_ = os.RemoveAll(target)
 		}
 	}()
-	if yes(row["ok"]) && !t.failed {
-		return false
+	failed := !yes(row["ok"]) || t.failed
+	switch t.scope {
+	case "all":
+	case "success":
+		if failed {
+			return false
+		}
+	default:
+		if !failed {
+			return false
+		}
 	}
 	if t.writeErr != nil {
 		log.Printf("detail log: %v", t.writeErr)
@@ -377,6 +389,12 @@ func (t *detailTrace) finish(row M) bool {
 		}
 		if err == nil {
 			err = writeJSONValue(w, a.err)
+		}
+		if err == nil {
+			_, err = w.WriteString(`,"proxy":`)
+		}
+		if err == nil {
+			err = writeJSONValue(w, M{"id": a.proxy.ID, "name": a.proxy.Name})
 		}
 		if err == nil {
 			_, err = w.WriteString(`}`)

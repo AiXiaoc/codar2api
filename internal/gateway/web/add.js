@@ -1,11 +1,40 @@
 'use strict';
 /* 添加账号弹窗：微信扫码 / 手机号 / 粘贴令牌 / 本机登录 */
-let QR_GEN = 0, ADD_WAY = 'wechat';
+let QR_GEN = 0, ADD_WAY = 'wechat', ADD_PROXY_GEN = 0, ADD_PROXY_READY = Promise.resolve();
 const WAYS = [['wechat', '微信扫码', 'chat'], ['phone', '手机号', 'phone'], ['token', '粘贴令牌', 'paste'], ['local', '本机登录', 'pc']];
 const addedText = r => (r.updated ? '已更新账号 ' : '已添加账号 ') + r.account.username + (r.claimed ? '，已领取免费模型' : '') + (r.signed ? '，已签到' : '');
+function addProxyID(){
+  const select = $('#addProxy');
+  if(!select || select.disabled || !/^(0|[1-9]\d*)$/.test(select.value)) throw new Error('代理列表尚不可用，请重新打开添加账号');
+  return Number(select.value);
+}
+function addProxyAvailability(){
+  const select = $('#addProxy'); if(!select) return;
+  const locked = ADD_WAY === 'phone' && !!PH.flow;
+  select.disabled = locked || !select.dataset.loaded;
+  if(locked) $('#addProxyMsg').textContent = '当前登录流程已固定使用开始时选择的代理。';
+  else if(select.dataset.loaded) $('#addProxyMsg').textContent = '扫码和手机号登录经此出口；导入账号后会绑定此出口。';
+}
+async function loadAddProxies(gen){
+  const select = $('#addProxy');
+  select.dataset.loaded = ''; select.disabled = true;
+  select.innerHTML = '<option>正在读取代理…</option>';
+  $('#addProxyMsg').textContent = '';
+  try {
+    const pool = await api('/proxy-pool');
+    if(gen !== ADD_PROXY_GEN) return;
+    select.innerHTML = '<option value="0">直连</option>' + (pool.proxies || []).map(p => '<option value="' + esc(p.id) + '"' + (p.enabled ? '' : ' disabled') + '>' + esc(p.name) + ' · #' + esc(p.id) + (p.enabled ? '' : '（已停用）') + '</option>').join('');
+    select.dataset.loaded = '1'; addProxyAvailability();
+  } catch(err){
+    if(gen !== ADD_PROXY_GEN) return;
+    select.innerHTML = '<option>代理列表读取失败</option>';
+    $('#addProxyMsg').textContent = '代理列表读取失败：' + err.message;
+  }
+}
 function addStep(way){
   QR_GEN++;                                       // 离开扫码页就停止轮询
   ADD_WAY = way;
+  addProxyAvailability();
   const note = ($('#addNote') || {}).value || '';
   $('#addSeg').innerHTML = WAYS.map(w => '<button type="button" role="tab" data-way="' + w[0] + '" aria-selected="' + (w[0] === way) + '">' + ic(w[2]) + '<span>' + esc(w[1]) + '</span>'
     + (w[0] === 'wechat' ? '<em>推荐</em>' : '') + '</button>').join('');
@@ -26,7 +55,7 @@ function addStep(way){
   if(way === 'phone'){
     /* PH.ctx：微信扫码转过来的绑定手机号 / 新 IP 验证；没有就是普通手机号登录 */
     const ctx = PH.ctx; PH.ctx = null;
-    PH.mode = ctx ? ctx.mode : 'login'; PH.flow = ctx ? ctx.flow : ''; PH.needPhone = !!ctx; PH.until = ctx ? 0 : PH.until;
+    PH.mode = ctx ? ctx.mode : 'login'; PH.flow = ctx ? ctx.flow : ''; PH.needPhone = !!ctx; addProxyAvailability();
     const lead = !ctx ? '' : '<div class="notice info"><b>' + (ctx.mode === 'bind' ? '这个微信账号还没绑定手机号' : '需要新 IP 手机验证') + '</b>（' + esc(ctx.username) + '）：'
       + (ctx.mode === 'bind' ? '填写要绑定的手机号，获取验证码后点「绑定并登录」。' : '填写账号绑定的手机号' + (ctx.tail ? '（尾号 ' + esc(ctx.tail) + '）' : '') + '，获取验证码后点「验证并登录」。') + '</div>';
     body.innerHTML = lead + '<label class="field">' + ic('phone') + '<input id="phNum" inputmode="numeric" maxlength="11" autocomplete="tel" placeholder="11 位手机号" aria-label="手机号" value="' + esc(ctx ? '' : PH.phone) + '"></label>'
@@ -34,7 +63,7 @@ function addStep(way){
       + '<button type="button" class="btn ghost" id="phSend" style="min-width:118px">获取验证码</button></div><div id="phMsg"></div>'
       + noteRow('<button type="button" class="btn" id="phLogin">' + (PH.mode === 'bind' ? '绑定并登录' : PH.mode === 'ip' ? '验证并登录' : '登录') + '</button>')
       + '<p class="hint">获取验证码前要手动完成一次人机验证。登录请求从网关服务器发出，上游要求新 IP 验证时会再发一条验证码到同一手机号。</p>';
-    phTick();
+    phSendReady();
     setTimeout(() => (PH.phone && !ctx ? $('#phCode') : $('#phNum')).focus(), 30);
   }
   if(way === 'local'){
@@ -59,7 +88,7 @@ async function loadLocal(){
 async function importLocal(btn){
   btn.disabled = true;
   try {
-    const r = await api('/local-login/import', {profile: btn.dataset.local, note: ($('#addNote') || {}).value.trim()});
+    const r = await api('/local-login/import', {profile: btn.dataset.local, note: ($('#addNote') || {}).value.trim(), proxy_id: addProxyID()});
     if(!r.ok) throw new Error(r.error);
     toast(addedText(r)); closeAdd(); await load(); openDrawer(r.account.uid);
   } catch(err){
@@ -68,13 +97,12 @@ async function importLocal(btn){
   }
 }
 /* ---- 手机号登录：人机验证在浏览器里由人完成（官方组件），结果交给网关去发短信 ---- */
-const PH = {phone: '', mode: 'login', flow: '', needPhone: false, ctx: null, until: 0, cap: null, capReady: null, pending: null};
+const PH = {phone: '', mode: 'login', flow: '', needPhone: false, ctx: null, cap: null, capReady: null, pending: null};
 function phNote(cls, html){ const m = $('#phMsg'); if(m) m.innerHTML = html ? '<div class="notice ' + cls + '">' + html + '</div>' : ''; }
-function phTick(){
-  const b = $('#phSend'); if(!b) return;
-  const left = Math.ceil((PH.until - Date.now()) / 1000);
-  if(left > 0){ b.disabled = true; b.textContent = left + ' 秒后重发'; setTimeout(phTick, 1000); }
-  else { b.disabled = false; b.textContent = PH.mode === 'ip' && !PH.needPhone ? '获取安全验证码' : '获取验证码'; }
+function phSendReady(btn = $('#phSend')){
+  if(!btn) return;
+  btn.disabled = false;
+  btn.textContent = PH.mode === 'ip' && !PH.needPhone ? '获取安全验证码' : '获取验证码';
 }
 function loadScript(src){
   return new Promise((resolve, reject) => {
@@ -115,21 +143,23 @@ async function solveCaptcha(){
 /* 普通登录、微信转过来的绑定 / 新 IP 验证要填手机号；手机号登录后的新 IP 验证用原号 */
 const phNeedPhone = () => PH.mode === 'login' || PH.needPhone;
 async function phSend(btn){
+  if(btn.disabled) return;
   const phone = phNeedPhone() ? $('#phNum').value.trim() : '';
   if(phNeedPhone() && !/^1[3-9]\d{9}$/.test(phone)) return phNote('bad', '请填写正确的 11 位手机号');
+  let proxyID;
+  try { proxyID = PH.flow ? null : addProxyID(); } catch(err){ return phNote('bad', esc(err.message)); }
   PH.phone = phone || PH.phone;
   btn.disabled = true; btn.textContent = '人机验证中…';
   phNote('info', '请在弹出的窗口里完成人机验证');
   try {
     const captcha = await solveCaptcha();
     btn.textContent = '发送中…';
-    const r = await api('/phone/code', PH.flow ? {flow: PH.flow, captcha, phone} : {phone, captcha});
+    const r = await api('/phone/code', PH.flow ? {flow: PH.flow, captcha, phone} : {phone, captcha, proxy_id: proxyID});
     if(!r.ok) throw new Error(r.error);
-    PH.until = Date.now() + 60000;
     phNote('ok', esc(r.message || '验证码已发送') + '（' + esc(r.phone) + '）');
     setTimeout(() => $('#phCode') && $('#phCode').focus(), 30);
   } catch(err){ phNote('bad', esc(err.message)); }
-  phTick();
+  finally { phSendReady(btn); }
 }
 async function phLogin(btn){
   const code = $('#phCode').value.trim();
@@ -140,20 +170,26 @@ async function phLogin(btn){
   try {
     const r = PH.mode === 'bind' ? await api('/phone/bind', {flow: PH.flow, code, note})
       : PH.mode === 'ip' ? await api('/phone/verify-ip', {flow: PH.flow, code, note})
-      : await api('/phone/login', {phone: $('#phNum').value.trim(), code, note});
+      : await api('/phone/login', {phone: $('#phNum').value.trim(), code, note, proxy_id: addProxyID()});
     if(!r.ok) throw new Error(r.error);
     if(r.state === 'ip_verify'){
-      PH.mode = 'ip'; PH.flow = r.flow; PH.until = 0; PH.needPhone = false;
+      PH.mode = 'ip'; PH.flow = r.flow; PH.needPhone = false; addProxyAvailability();
       $('#phNum').disabled = true; $('#phCode').value = ''; btn.textContent = '验证并登录';
       phNote('info', '<b>需要安全验证</b>：' + esc(r.message) + '。点「获取安全验证码」，验证码会发到 ' + esc(r.phone) + '，填好后点「验证并登录」。');
-      phTick(); btn.disabled = false; return;
+      phSendReady(); btn.disabled = false; return;
     }
-    toast(addedText(r)); PH.phone = ''; PH.until = 0;
+    toast(addedText(r)); PH.phone = '';
     closeAdd(); await load(); openDrawer(r.account.uid);
   } catch(err){ phNote('bad', '<b>登录失败</b>：' + esc(err.message)); btn.disabled = false; }
 }
-function openAdd(way){ openModal('#addModal'); addStep(typeof way === 'string' ? way : ADD_WAY); setTimeout(() => $('#addSeg [aria-selected="true"]').focus(), 40); }
-function closeAdd(){ QR_GEN++; closeModal('#addModal'); }
+function openAdd(way){
+  openModal('#addModal');
+  ADD_PROXY_READY = loadAddProxies(++ADD_PROXY_GEN);
+  addStep(typeof way === 'string' ? way : ADD_WAY);
+  setTimeout(() => $('#addSeg [aria-selected="true"]').focus(), 40);
+}
+function closeAdd(){ QR_GEN++; ADD_PROXY_GEN++; closeModal('#addModal'); }
+$('#addProxy').addEventListener('change', () => { if(ADD_WAY === 'wechat') qrStart(); });
 MODAL_CLOSE['#addModal'] = closeAdd;
 function qrNote(cls, html){ const m = $('#qrMsg'); if(m) m.innerHTML = html ? '<div class="notice ' + cls + '">' + html + '</div>' : ''; }
 function qrDone(mark){
@@ -188,7 +224,9 @@ async function qrStart(){
   w.classList.remove('done'); w.classList.add('loading'); (w.querySelector('.qrmark') || {remove(){}}).remove();
   img.innerHTML = '<span class="qrph">正在获取二维码…</span>'; qrNote('', '');
   try {
-    const r = await api('/wechat/qrcode', {note: ($('#addNote') || {}).value || ''});
+    await ADD_PROXY_READY;
+    if(gen !== QR_GEN) return;
+    const r = await api('/wechat/qrcode', {note: ($('#addNote') || {}).value || '', proxy_id: addProxyID()});
     if(!r.ok) throw new Error(r.error);
     if(gen !== QR_GEN) return;
     w.classList.remove('loading');
@@ -204,9 +242,9 @@ const JWT_RE = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 function countTokens(){ const n = new Set(($('#tokenIn').value.match(JWT_RE) || [])).size; $('#addBtn').textContent = n > 1 ? '批量导入 ' + n + ' 个' : '导入'; }
 async function importBatch(btn, text, note){
   btn.disabled = true; btn.textContent = '导入中…';
-  $('#tokMsg').innerHTML = spinner('正在逐个校验并导入…');
+  $('#tokMsg').innerHTML = spinner('正在直接导入账号…');
   try {
-    const r = await api('/accounts/import-batch', {text, note});
+    const r = await api('/accounts/import-batch', {text, note, proxy_id: addProxyID()});
     if(!r.ok) throw new Error(r.error);
     const line = x => '<tr><td class="num">' + x.index + '</td><td class="mono">' + esc(x.token_masked) + '</td><td>' + (x.ok ? '<b>' + esc(x.username) + '</b>' : '<span class="muted">-</span>') + '</td><td>'
       + (x.ok ? chip(x.updated ? 'info sm' : 'ok sm', x.updated ? '已更新令牌' : '新增') : chip('bad sm', '失败') + ' <span class="bad-t small">' + esc(x.error) + '</span>') + '</td></tr>';
@@ -222,7 +260,7 @@ async function importToken(btn){
   if(new Set(token.match(JWT_RE) || []).size > 1) return importBatch(btn, token, ($('#addNote') || {}).value.trim());
   btn.disabled = true;
   try {
-    const r = await api('/accounts/add', {token, note: ($('#addNote') || {}).value.trim()});
+    const r = await api('/accounts/add', {token, note: ($('#addNote') || {}).value.trim(), proxy_id: addProxyID()});
     toast(addedText(r)); closeAdd(); await load(); openDrawer(r.account.uid);
   } catch(err){ $('#tokMsg').innerHTML = '<div class="notice bad"><b>导入失败</b>：' + esc(err.message) + '</div>'; btn.disabled = false; }
 }

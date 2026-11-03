@@ -41,14 +41,14 @@ const exitID = a => a.proxy && a.proxy.mode === 'round_robin' ? -1 : a.proxy && 
 const exitName = a => exitID(a) ? proxyName(a) : '直连';
 /* 账号状态只有「正常」「账号受限」两种；冷却、余额、令牌、出口 IP 等调度条件写在下面一行 */
 function stateCell(a){
-  const s = a.sign || {}, expired = a.token_exp && a.token_exp <= NOW(), notes = [], nt = html => notes.push('<span class="nt">' + html + '</span>');
+  const s = a.sign || {}, expired = a.token_exp && a.token_exp <= NOW(), hasFree = (a.free_models || []).length > 0, notes = [], nt = html => notes.push('<span class="nt">' + html + '</span>');
   const main = a.restricted ? chip('bad', '<i class="pt"></i>账号受限', a.restricted_reason || '上游返回 account_restricted')
     : chip('ok', '<i class="pt"></i>正常', a.last_error ? '最近错误：' + a.last_error : '');
   if(a.restricted) nt('<button type="button" class="link" data-act="unrestrict">解除受限</button>');
   if(exitBlocked(a)) nt('<span class="bad-t" title="' + esc(a.proxy.blocked_reason || '') + '">IP 封控 · ' + esc(exitName(a)) + '</span><button type="button" class="link" data-act="' + (a.proxy.mode === 'round_robin' ? 'proxy-pool' : 'unblock') + '">' + (a.proxy.mode === 'round_robin' ? '管理代理池' : '解除') + '</button>');
-  if(cooling(a)) nt('<span class="warn-t">' + (a.cooldown_kind === 'balance' ? '余额冷却 · 仅免费模型' : esc(a.cooldown_reason || '冷却中')) + '</span><span class="cd" data-cd="' + a.cooldown_until + '">还有 '
+  if(cooling(a)) nt('<span class="warn-t">' + (a.cooldown_kind === 'balance' ? '余额冷却 · ' + (hasFree ? '仅免费模型' : '已暂停调度') : esc(a.cooldown_reason || '冷却中')) + '</span><span class="cd" data-cd="' + a.cooldown_until + '">还有 '
     + dur2s(a.cooldown_until - NOW()) + '</span><button type="button" class="link" data-act="reset">立即恢复</button>');
-  else if(a.paid_block) nt('<span class="muted" title="收费模型暂停派发，免费模型照常；签到、兑换或充值后下次刷新即恢复">仅免费模型 · ' + esc(a.paid_block) + '</span>');
+  else if(a.paid_block) nt('<span class="' + (hasFree ? 'muted' : 'warn-t') + '" title="' + (hasFree ? '收费模型暂停派发，活动有效期内的免费模型照常' : '没有活动有效期内的免费模型，已停止模型调度') + '；签到、兑换或充值后下次刷新余额即恢复">' + (hasFree ? '仅免费模型 · ' + esc(a.paid_block) : '余额不足，已暂停调度') + '</span>');
   const token = a.token_invalid ? '令牌失效' : expired ? '令牌过期' : a.reason === '没有令牌' ? '没有令牌' : '';
   if(token) nt('<span class="bad-t">' + token + '</span><button type="button" class="link" data-act="relogin">重新导入</button>');
   if(a.enabled && a.ready && s.at && !s.signed) nt('<span class="warn-t">今天还没签到</span>');
@@ -93,6 +93,8 @@ function drawSelection(){
   const restricted = ROWS.some(a => SELECTED_ACCOUNTS.has(a.uid) && a.restricted);
   document.querySelectorAll('[data-batch]').forEach(b => { b.disabled = BATCH_BUSY || !SELECTED_ACCOUNTS.size || (b.dataset.batch === 'clear_restriction' && !restricted); });
   $('#restrictionAll').disabled = BATCH_BUSY;
+  $('#concurrencyAll').disabled = BATCH_BUSY || !ROWS.length;
+  $('#concurrencySelected').disabled = BATCH_BUSY || !SELECTED_ACCOUNTS.size;
   document.querySelectorAll('#accBody tr[data-uid]').forEach(tr => {
     const picked = SELECTED_ACCOUNTS.has(tr.dataset.uid), box = tr.querySelector('[data-select-account]');
     tr.classList.toggle('checked', picked); box.checked = picked; box.disabled = BATCH_BUSY;

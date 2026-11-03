@@ -146,3 +146,87 @@ test('detail view uses three sections, retains headers and copies raw bodies', a
   assert.equal(vm.runInContext('DETAIL_COPY.length', context), 0);
   assert.equal(element('#requestDetailBody').textContent, '');
 });
+
+test('large response bodies open as pages and preserve complete copy', async () => {
+  const body = 'data: ' + JSON.stringify({text:'x'.repeat(390000)}) + '\n\n';
+  const detail = {
+    request:{method:'POST', body:'{"messages":[]}'},
+    attempts:[{request:{method:'POST', body:'{"messages":[]}'}, response:{status:200, body}}],
+    response:{status:200, body}
+  };
+  const elements = new Map();
+  const element = selector => {
+    if(!elements.has(selector)) elements.set(selector, {innerHTML:'', textContent:'', addEventListener(type, handler){this[type] = handler;}});
+    return elements.get(selector);
+  };
+  const context = vm.createContext({
+    DetailDiff:Diff, esc, $:element, document:{addEventListener(){}, createTextNode(value){return value;}}, MODAL_CLOSE:{},
+    spinner:()=>'', openModal(){}, closeModal(){}, toast(){}, copyText:async()=>true,
+    api:async()=>({detail})
+  });
+  const begin = pages.indexOf('let DETAIL_GENERATION'), end = pages.indexOf("$('#statWin').addEventListener", begin);
+  vm.runInContext(pages.slice(begin, end), context);
+  await vm.runInContext("openRequestDetail('large-id')", context);
+  const html = element('#requestDetailBody').innerHTML;
+  assert(html.length < 300000, `initial HTML is ${html.length} characters`);
+  assert.equal((html.match(/data-detail-more=/g) || []).length, 2);
+  assert.equal(vm.runInContext('DETAIL_COPY', context).filter(value => value === body).length, 2);
+  const pageLength = vm.runInContext('DETAIL_PAGES[0].value.length', context);
+  let rendered = '', removed = false;
+  const pre = {appendChild(value){rendered += value;}};
+  const button = {
+    dataset:{detailMore:'0'},
+    closest(){return {querySelector(){return pre;}};},
+    remove(){removed = true;}
+  };
+  for(let i = 0; i < 20 && !removed; i++){
+    await element('#requestDetailBody').click({target:{closest(selector){return selector === '[data-detail-more]' ? button : null;}}});
+  }
+  assert(removed);
+  assert.equal(rendered.length, pageLength - 60000);
+  vm.runInContext("MODAL_CLOSE['#requestDetailModal']('#requestDetailModal')", context);
+  assert.equal(vm.runInContext('DETAIL_PAGES.length', context), 0);
+});
+
+test('detail export includes every captured header and raw body', async () => {
+  const id = '0123456789abcdef0123456789abcdef';
+  const detail = {
+    id, ts:1793610000,
+    request:{method:'POST', url:'/v1/chat/completions', status:0,
+      headers:{Authorization:['Bearer local-test-key'], 'X-Trace':['original']}, body_encoding:'utf-8', body:'{"messages":[{"content":"original"}]}'},
+    attempts:[
+      {request:{method:'POST',url:'https://upstream.test/v1/chat/completions',headers:{Authorization:['Bearer upstream-test-token']},body_encoding:'utf-8',body:'{"messages":[{"content":"forwarded"}]}'},
+        response:{status:502,headers:{'X-Upstream':['first']},body_encoding:'base64',body:'/wAB'},error:'first attempt failed',proxy:{id:3,name:'<proxy-3>'}},
+      {request:{method:'POST',url:'https://upstream.test/v1/chat/completions',headers:{'X-Retry':['second']},body_encoding:'utf-8',body:'{"messages":[{"content":"retry"}]}'},
+        response:{status:200,headers:{'X-Upstream':['second']},body_encoding:'utf-8',body:'data: [DONE]\n\n'},error:''}
+    ],
+    response:{status:200,headers:{'X-Final':['client']},body_encoding:'utf-8',body:'{"ok":true}'}
+  };
+  const elements = new Map(), files = [];
+  const element = selector => {
+    if(!elements.has(selector)) elements.set(selector, {innerHTML:'', textContent:'', disabled:false, addEventListener(type, handler){this[type] = handler;}});
+    return elements.get(selector);
+  };
+  let resolveDetail;
+  const context = vm.createContext({
+    DetailDiff:Diff, esc, $:element, document:{addEventListener(){}}, MODAL_CLOSE:{},
+    spinner:()=>'', openModal(){}, closeModal(){}, toast(){}, copyText:async()=>true,
+    api:()=>new Promise(resolve => { resolveDetail = resolve; }),
+    saveFile:(name, text)=>files.push({name, text})
+  });
+  const begin = pages.indexOf('let DETAIL_GENERATION'), end = pages.indexOf("$('#statWin').addEventListener", begin);
+  vm.runInContext(pages.slice(begin, end), context);
+  const loading = vm.runInContext(`openRequestDetail('${id}')`, context);
+  assert.equal(element('#requestDetailExport').disabled, true);
+  resolveDetail({detail});
+  await loading;
+  assert.equal(element('#requestDetailExport').disabled, false);
+  assert(element('#requestDetailBody').innerHTML.includes('出口：&lt;proxy-3&gt;'));
+  element('#requestDetailExport').click();
+  assert.equal(files[0].name, `codar2api-request-${id}.json`);
+  assert.deepEqual(JSON.parse(files[0].text), detail);
+  vm.runInContext("MODAL_CLOSE['#requestDetailModal']('#requestDetailModal')", context);
+  assert.equal(element('#requestDetailExport').disabled, true);
+  element('#requestDetailExport').click();
+  assert.equal(files.length, 1, 'closed detail must not export stale data');
+});

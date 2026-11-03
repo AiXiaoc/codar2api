@@ -32,13 +32,23 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			a.store.mu.RUnlock()
 			return M{"accounts": rows, "settings": a.store.Settings(), "catalog_at": at}, 200, nil
 		case "/settings":
-			return M{"settings": a.store.Settings(), "schema": schema, "scheduling_options": schedulingOptions}, 200, nil
+			return M{"settings": a.store.Settings(), "schema": schema, "scheduling_options": schedulingOptions, "request_debug_options": requestDebugOptions, "request_blocklist_count": a.requestBlocks.Count()}, 200, nil
 		case "/accounts/concurrency":
 			return M{"accounts": a.store.Concurrency()}, 200, nil
 		case "/keys":
 			return M{"keys": a.auth.Keys()}, 200, nil
 		case "/proxy-pool":
 			return a.proxies.View(true), 200, nil
+		case "/accounts/catalog":
+			account, e := a.account(q.Get("uid"))
+			if e != nil {
+				return nil, 404, e
+			}
+			out, e := a.requestJSON(ctx, "GET", a.cfg.APIBase+"/v1/codar/models", account, nil, nil)
+			if e != nil {
+				return nil, http.StatusBadGateway, e
+			}
+			return M{"uid": account["uid"], "models": catalogModels(out), "at": now()}, 200, nil
 		case "/catalog":
 			models, e := a.catalog(ctx, force)
 			if e != nil && len(models) == 0 {
@@ -134,6 +144,9 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 		return nil, 404, errors.New("未知接口")
 	}
 	switch path {
+	case "/request-blocklist/clear":
+		err := a.requestBlocks.Clear()
+		return M{"ok": true}, 500, err
 	case "/auth/password":
 		e := a.auth.ChangePassword(text(p["current_password"]), text(p["password"]))
 		return M{"ok": true}, 400, e
@@ -197,7 +210,11 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 		d, e := a.store.Batch(p)
 		return d, 400, e
 	case "/accounts/import-batch":
-		return a.importBatch(ctx, p), 200, nil
+		route, e := a.importRoute(p)
+		if e != nil {
+			return nil, 400, e
+		}
+		return a.importBatch(ctx, p, route), 200, nil
 	case "/accounts/export":
 		d, e := a.exportAccounts(p)
 		return d, 400, e
@@ -205,16 +222,24 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 		d, e := a.importAccounts(ctx, p)
 		return d, 400, e
 	case "/accounts/add":
-		d, e := a.importToken(ctx, text(p["token"]), text(p["note"]), "token", nil)
+		route, e := a.importRoute(p)
+		if e != nil {
+			return nil, 400, e
+		}
+		d, e := a.importStoredTokenAt(text(p["token"]), text(p["note"]), "token", nil, route)
 		return d, statusOf(e), e
 	case "/local-login/import":
+		route, e := a.importRoute(p)
+		if e != nil {
+			return nil, 400, e
+		}
 		found, e := a.localLogins()
 		if e != nil {
 			return nil, 400, e
 		}
 		for _, login := range found {
 			if text(p["profile"]) == "" || p["profile"] == login["profile"] {
-				d, e := a.importToken(ctx, text(login["token"]), text(p["note"]), "local", nil)
+				d, e := a.importStoredTokenAt(text(login["token"]), text(p["note"]), "local", login, route)
 				return d, statusOf(e), e
 			}
 		}
@@ -228,6 +253,18 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 	case "/settings":
 		d, e := a.store.SaveSettings(p)
 		return M{"ok": true, "settings": d}, 400, e
+	case "/catalog/proxy":
+		if _, ok := p["proxy_id"]; !ok {
+			return nil, 400, errors.New("请选择模型目录的获取代理")
+		}
+		id, e := parseProxyID(p["proxy_id"])
+		if e != nil {
+			return nil, 400, e
+		}
+		if e = a.proxies.SetCatalogProxy(id); e != nil {
+			return nil, 400, e
+		}
+		return M{"ok": true, "catalog_proxy_id": id}, 200, nil
 	case "/about/check-update":
 		d, e := a.updates.check(ctx, Version)
 		return d, http.StatusBadGateway, e
@@ -457,9 +494,8 @@ func (a *App) exportAccounts(p M) (M, error) {
 	return M{"ok": true, "format": exportFormat, "version": 1, "exported_at": now(), "accounts": rows}, nil
 }
 
-// importAccounts restores an export file. Every token is checked with the
-// upstream like a pasted token; existing accounts keep their own settings and
-// new ones take the exported note, login method and enabled state.
+// importAccounts restores an export file without upstream requests. Existing
+// accounts keep their settings; new accounts take the exported local metadata.
 func (a *App) importAccounts(ctx context.Context, p M) (M, error) {
 	if f, ok := p["format"]; ok && f != exportFormat {
 		return nil, errors.New("不是 Codar2API 导出的账号文件")
@@ -491,11 +527,11 @@ func (a *App) importAccounts(ctx context.Context, p M) (M, error) {
 		if err != nil {
 			return nil, fmt.Errorf("第 %d 个账号：%w", i+1, err)
 		}
-		items = append(items, M{"index": i + 1, "token": token, "note": string(note[:min(len(note), 200)]), "via": via, "enabled": m["enabled"], "scheduling": scheduling})
+		items = append(items, M{"index": i + 1, "token": token, "note": string(note[:min(len(note), 200)]), "via": via, "enabled": m["enabled"], "scheduling": scheduling, "metadata": m})
 	}
 	rows := parallel(ctx, items, func(v M) M {
 		r := M{"index": v["index"], "token_masked": masked(text(v["token"]))}
-		d, e := a.importToken(ctx, text(v["token"]), text(v["note"]), text(v["via"]), nil)
+		d, e := a.importStoredToken(text(v["token"]), text(v["note"]), text(v["via"]), obj(v["metadata"]))
 		if e == nil && !yes(d["updated"]) {
 			e = a.store.Update(text(obj(d["account"])["uid"]), func(c M) error {
 				if v["enabled"] == false {
@@ -531,7 +567,7 @@ func importSummary(rows []M) M {
 	}
 	return M{"ok": true, "total": len(rows), "added": added, "updated": updated, "failed": failed, "results": items}
 }
-func (a *App) importBatch(ctx context.Context, p M) M {
+func (a *App) importBatch(ctx context.Context, p M, route *Route) M {
 	input := text(p["text"])
 	if input == "" {
 		for _, v := range arr(p["tokens"]) {
@@ -550,7 +586,7 @@ func (a *App) importBatch(ctx context.Context, p M) M {
 		return M{"ok": false, "error": "请提供 1 至 200 个有效 JWT"}
 	}
 	rows := parallel(ctx, tokens, func(v M) M {
-		d, e := a.importToken(ctx, text(v["token"]), text(p["note"]), "token", nil)
+		d, e := a.importStoredTokenAt(text(v["token"]), text(p["note"]), "token", nil, route)
 		r := M{"index": v["index"], "token_masked": masked(text(v["token"]))}
 		if e != nil {
 			r["ok"] = false

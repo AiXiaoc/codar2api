@@ -7,11 +7,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -122,6 +124,30 @@ func (p *ProxyPool) Pin(id int) (Route, error) {
 	defer p.mu.Unlock()
 	r, _, e := p.pinLocked(id)
 	return r, e
+}
+func (p *ProxyPool) CatalogRoute() (Route, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	id, e := parseProxyID(p.data["catalog_proxy_id"])
+	if e != nil {
+		return Route{}, e
+	}
+	r, _, e := p.pinLocked(id)
+	return r, e
+}
+func (p *ProxyPool) SetCatalogProxy(id int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, _, e := p.pinLocked(id); e != nil {
+		return e
+	}
+	next := clone(p.data)
+	next["catalog_proxy_id"] = id
+	if e := writeJSON(filepath.Join(p.dir, "proxies.json"), next); e != nil {
+		return e
+	}
+	p.data = next
+	return nil
 }
 func (p *ProxyPool) accountLocked(uid string, skipBlocked, advance bool) (Route, error) {
 	policy := obj(obj(p.data["accounts"])[uid])
@@ -337,7 +363,7 @@ func (p *ProxyPool) View(admin bool) M {
 		}
 		rows = append(rows, m)
 	}
-	return M{"ok": true, "supported": true, "proxies": rows, "direct": clone(obj(p.data["direct"])), "error": ""}
+	return M{"ok": true, "supported": true, "proxies": rows, "direct": clone(obj(p.data["direct"])), "catalog_proxy_id": num(p.data["catalog_proxy_id"]), "error": ""}
 }
 func (p *ProxyPool) Bind(uids []string, r Route) error {
 	p.mu.Lock()
@@ -586,12 +612,20 @@ func (p *ProxyPool) Do(req *http.Request, r Route) (*http.Response, error) {
 	if e != nil {
 		return nil, e
 	}
-	resp, e := c.Do(req)
+	// GotConn fires only after proxy negotiation and TLS have completed. Once
+	// a usable connection was handed to HTTP, a failed POST must not be replayed
+	// by the proxy policy: the upstream may already have received its body.
+	var connected atomic.Bool
+	ctx := httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
+	resp, e := c.Do(req.WithContext(ctx))
 	if e != nil {
 		if req.Context().Err() != nil {
 			return nil, req.Context().Err()
 		}
 		if r.ID > 0 {
+			if !connected.Load() {
+				return nil, &proxyConnectError{}
+			}
 			return nil, errors.New("指定代理连接上游失败，请检查代理；当前请求未切换为直连")
 		}
 		return nil, errors.New("连接上游失败或超时")

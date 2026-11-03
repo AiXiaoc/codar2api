@@ -33,6 +33,7 @@ h1,h2,h3{margin:0;font-weight:800}
 .page-head h1{display:inline-block;font-size:30px;background:linear-gradient(transparent 58%,var(--yellow) 58%,var(--yellow) 90%,transparent 90%)}
 .sub{margin:2px 0 0;color:var(--muted);font-size:13px}
 .head-act{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.head-act .catalog-proxy{width:220px;max-width:100%}
 /* 控件 */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 17px;border:var(--bw) solid var(--ink);border-radius:999px;background:var(--pink);font-weight:800;box-shadow:3px 3px 0 var(--ink);white-space:nowrap;transition:transform .12s,box-shadow .12s}
 .btn:hover:not(:disabled){transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--ink)}.btn:active:not(:disabled){transform:translate(3px,3px);box-shadow:0 0 0 var(--ink)}

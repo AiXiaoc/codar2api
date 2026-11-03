@@ -5,8 +5,37 @@ const VENDORS = [[/^claude/i, 'Claude', '#FFB070'], [/^gpt|^o\d/i, 'OpenAI', '#8
 const vendor = id => VENDORS.find(v => v[0].test(id)) || [null, '其他', '#EDE2CC'];
 const fmtK = v => { if(!v) return '-'; const k = Math.round(v / 1000); return k >= 1000 ? (k / 1000) + 'M' : k + 'K'; };
 function freeNow(){ const out = new Set(); ROWS.filter(a => a.ready).forEach(a => (a.free_models || []).forEach(m => out.add(m))); return out; }
+let CATALOG_GENERATION = 0, CATALOG_PROXY_ID = 0, CATALOG_PROXIES = [], CATALOG_SAVING = false;
+function drawCatalogProxy(){
+  $('#catProxy').innerHTML = '<option value="0">直连</option>' + CATALOG_PROXIES.map(p => '<option value="' + p.id + '"' + (!p.enabled ? ' disabled' : '') + '>'
+    + esc(p.name) + ' · #' + p.id + (!p.enabled ? '（已停用）' : '') + '</option>').join('')
+    + (CATALOG_PROXY_ID && !CATALOG_PROXIES.some(p => p.id === CATALOG_PROXY_ID) ? '<option value="' + CATALOG_PROXY_ID + '" disabled>已删除的代理 #' + CATALOG_PROXY_ID + '</option>' : '');
+  $('#catProxy').value = String(CATALOG_PROXY_ID);
+}
 async function loadCatalog(force){
-  const d = await api('/catalog' + (force ? '?force=1' : '')), free = freeNow();
+  const generation = ++CATALOG_GENERATION;
+  $('#catProxy').disabled = $('#catRefresh').disabled = true;
+  $('#catAt').textContent = '正在读取模型目录…';
+  $('#catBody').innerHTML = '';
+  try {
+    const pool = await api('/proxy-pool');
+    if(generation !== CATALOG_GENERATION) return;
+    CATALOG_PROXIES = pool.proxies || []; CATALOG_PROXY_ID = Number(pool.catalog_proxy_id || 0); drawCatalogProxy();
+    $('#catProxy').disabled = CATALOG_SAVING;
+    const d = await api('/catalog' + (force ? '?force=1' : ''));
+    if(generation !== CATALOG_GENERATION) return;
+    drawCatalog(d); return d;
+  } catch(err){
+    if(generation !== CATALOG_GENERATION) return;
+    $('#catAt').textContent = '读取失败：' + err.message;
+    $('#catBody').innerHTML = '<div class="empty-box">请检查获取代理后重试</div>';
+    throw err;
+  } finally {
+    if(generation === CATALOG_GENERATION) $('#catProxy').disabled = $('#catRefresh').disabled = CATALOG_SAVING;
+  }
+}
+function drawCatalog(d){
+  const free = freeNow();
   $('#catAt').innerHTML = d.models.length + ' 个' + (d.at ? ' · ' + ago(d.at) + '更新' : '') + (d.warning ? ' · <span class="bad-t">刷新失败：' + esc(d.warning) + '</span>' : '');
   $('#catBody').innerHTML = d.models.map(m => {
     const p = m.pricing || {}, v = vendor(m.id), lv = m.reasoning_levels || [];
@@ -20,7 +49,29 @@ async function loadCatalog(force){
         : '<em style="margin-left:0">没有目录价</em>') + '</div></article>';
   }).join('') || '<div class="empty-box">上游还没有返回模型</div>';
 }
-$('#catRefresh').onclick = () => loadCatalog(true).then(() => toast('模型目录已刷新')).catch(err => toast(err.message, true));
+$('#catRefresh').onclick = () => loadCatalog(true).then(d => {
+  if(d) toast(d.warning ? '刷新失败：' + d.warning : '模型目录已刷新', !!d.warning);
+}).catch(err => toast(err.message, true));
+$('#catProxy').onchange = async () => {
+  if(CATALOG_SAVING) return;
+  const before = CATALOG_PROXY_ID, next = Number($('#catProxy').value);
+  CATALOG_SAVING = true; CATALOG_GENERATION++;
+  $('#catProxy').disabled = $('#catRefresh').disabled = true;
+  $('#catAt').textContent = '正在保存获取代理…'; $('#catBody').innerHTML = '';
+  try {
+    const saved = await api('/catalog/proxy', {proxy_id:next});
+    CATALOG_PROXY_ID = Number(saved.catalog_proxy_id); drawCatalogProxy();
+    try {
+      const d = await loadCatalog(true);
+      if(d) toast(d.warning ? '代理已保存，刷新失败：' + d.warning : '获取代理已保存，模型目录已刷新', !!d.warning);
+    } catch(err){ toast('代理已保存，读取失败：' + err.message, true); }
+  } catch(err){
+    CATALOG_PROXY_ID = before; drawCatalogProxy();
+    $('#catAt').textContent = '保存失败：' + err.message; toast('保存失败：' + err.message, true);
+  } finally {
+    CATALOG_SAVING = false; $('#catProxy').disabled = $('#catRefresh').disabled = false;
+  }
+};
 /* ---- 统计 ---- */
 let STAT_H = 24, UPDAYS = 7;
 try { STAT_H = +localStorage.getItem('codar-stat-hours') || 24; } catch(e) {}
@@ -48,7 +99,8 @@ async function loadStats(){
     + '<td class="num">' + (r.prompt || r.completion ? n(r.prompt) + ' / ' + n(r.cached) + ' / ' + n(r.completion) : '-') + '</td><td class="num">' + (r.ttft_ms != null ? r.ttft_ms + ' ms' : '-')
     + '</td><td class="num">' + (r.ms != null ? n(r.ms) + ' ms' : '-') + '</td><td class="num">' + yuan(r.price_cost) + '</td></tr>').join('') || '<tr><td colspan="9" class="empty">还没有请求</td></tr>';
 }
-let DETAIL_GENERATION = 0, DETAIL_COPY = [];
+let DETAIL_GENERATION = 0, DETAIL_COPY = [], DETAIL_PAGES = [], DETAIL_DATA = null;
+const DETAIL_PAGE_SIZE = 60000;
 // Format JSON without parsing and re-encoding values, so large numbers and
 // escaped strings stay exactly as the sender wrote them.
 function formatDetailBody(value, encoding){
@@ -103,8 +155,14 @@ function formatDetailHeaders(headers){
 }
 function detailPart(title, value, copy, highlighted){
   const id = DETAIL_COPY.push(copy === undefined ? value : copy) - 1;
+  let display = highlighted === undefined ? esc(value) : highlighted, more = '';
+  if(value.length > DETAIL_PAGE_SIZE){
+    const page = DETAIL_PAGES.push({value, offset: DETAIL_PAGE_SIZE}) - 1;
+    display = esc(value.slice(0, DETAIL_PAGE_SIZE));
+    more = '<button type="button" class="btn ghost sm" data-detail-more="' + page + '">显示后续内容（共 ' + value.length + ' 字符）</button>';
+  }
   return '<section class="request-detail-part"><div class="request-detail-head"><b>' + esc(title) + '</b>'
-    + '<button type="button" class="btn ghost sm" data-detail-copy="' + id + '">复制</button></div><pre class="request-detail-pre">' + (highlighted === undefined ? esc(value) : highlighted) + '</pre></section>';
+    + '<button type="button" class="btn ghost sm" data-detail-copy="' + id + '">复制</button></div><pre class="request-detail-pre">' + display + '</pre>' + more + '</section>';
 }
 function detailHeaders(title, headers){
   return '<details class="request-detail-fold"><summary>' + esc(title) + '</summary>' + detailPart(title, formatDetailHeaders(headers)) + '</details>';
@@ -126,7 +184,9 @@ function detailForward(original, attempt, index, total){
   const before = original && original.body, after = request.body;
   const display = formatDetailBody(after, request.body_encoding);
   let comparison;
-  try {
+  if((typeof before === 'string' && before.length > DETAIL_PAGE_SIZE) || display.length > DETAIL_PAGE_SIZE){
+    comparison = {ranges: [], removed: [], changed: false, reason: '正文较长，按段显示；可复制完整正文。'};
+  } else try {
     comparison = DetailDiff.compare(before === '' ? '' : before == null ? null : formatDetailBody(before, original.body_encoding),
       after === '' ? '' : after == null ? null : display,
       {beforeBinary: String((original || {}).body_encoding || '').toLowerCase() === 'base64', afterBinary: String(request.body_encoding || '').toLowerCase() === 'base64'});
@@ -135,6 +195,7 @@ function detailForward(original, attempt, index, total){
   const deletions = comparison.removed.length ? '<details class="request-detail-fold"><summary>原始请求中有 ' + comparison.removed.length + ' 处内容被删除</summary><pre class="request-detail-pre">' + esc(comparison.removed.join('\n')) + '</pre></details>' : '';
   const highlighted = after === '' || after == null ? esc(display) : DetailDiff.render(display, comparison.ranges, esc);
   return '<div class="request-detail-attempt">' + (total > 1 ? '<h4>第 ' + (index + 1) + ' 次转发</h4>' : '') + detailMeta(request)
+    + (attempt.proxy ? '<div class="request-detail-meta">出口：' + esc(attempt.proxy.name || (attempt.proxy.id ? '代理 #' + attempt.proxy.id : '直连')) + '</div>' : '')
     + '<p class="request-detail-hint muted">' + esc(note) + '</p>' + detailBody(request, '转发正文', highlighted) + deletions + detailHeaders('转发请求头', request.headers) + '</div>';
 }
 function detailUpstreamResponse(attempt, index){
@@ -146,7 +207,8 @@ function detailUpstreamResponse(attempt, index){
 }
 async function openRequestDetail(id){
   const generation = ++DETAIL_GENERATION;
-  DETAIL_COPY = [];
+  DETAIL_COPY = []; DETAIL_PAGES = []; DETAIL_DATA = null;
+  $('#requestDetailExport').disabled = true;
   $('#requestDetailBody').innerHTML = spinner('正在读取详细记录…');
   openModal('#requestDetailModal');
   try {
@@ -160,6 +222,8 @@ async function openRequestDetail(id){
       + '<section class="request-detail-group"><h3>响应体</h3>' + (response.status ? '<div class="request-detail-meta">返回客户端 · HTTP ' + esc(response.status) + '</div>' : '<p class="muted small">未记录客户端响应</p>')
       + detailBody(response, '返回客户端的正文') + detailHeaders('返回客户端的响应头', response.headers)
       + attempts.map((a, i) => detailUpstreamResponse(a, i)).join('') + '</section>';
+    DETAIL_DATA = d;
+    $('#requestDetailExport').disabled = false;
   } catch(err){
     if(generation === DETAIL_GENERATION) $('#requestDetailBody').innerHTML = '<div class="notice bad">读取失败：' + esc(err.message) + '</div>';
   }
@@ -168,13 +232,29 @@ document.addEventListener('click', e => {
   const b = e.target.closest('[data-request-detail]');
   if(b) openRequestDetail(b.dataset.requestDetail);
 });
+$('#requestDetailExport').addEventListener('click', () => {
+  if(!DETAIL_DATA) return;
+  saveFile('codar2api-request-' + DETAIL_DATA.id + '.json', JSON.stringify(DETAIL_DATA, null, 2));
+  toast('详细记录已导出');
+});
 $('#requestDetailBody').addEventListener('click', async e => {
+  const more = e.target.closest('[data-detail-more]');
+  if(more){
+    const page = DETAIL_PAGES[Number(more.dataset.detailMore)];
+    if(!page) return;
+    const end = Math.min(page.offset + DETAIL_PAGE_SIZE, page.value.length);
+    more.closest('.request-detail-part').querySelector('pre').appendChild(document.createTextNode(page.value.slice(page.offset, end)));
+    page.offset = end;
+    if(end === page.value.length) more.remove();
+    return;
+  }
   const b = e.target.closest('[data-detail-copy]'); if(!b) return;
   const ok = await copyText(DETAIL_COPY[Number(b.dataset.detailCopy)] || '');
   toast(ok ? '已复制' : '复制失败', !ok);
 });
 MODAL_CLOSE['#requestDetailModal'] = id => {
-  DETAIL_GENERATION++; DETAIL_COPY = []; $('#requestDetailBody').textContent = ''; closeModal(id);
+  DETAIL_GENERATION++; DETAIL_COPY = []; DETAIL_PAGES = []; DETAIL_DATA = null; $('#requestDetailExport').disabled = true;
+  $('#requestDetailBody').textContent = ''; closeModal(id);
 };
 $('#statWin').addEventListener('click', e => { const b = e.target.closest('[data-h]'); if(!b) return;
   STAT_H = +b.dataset.h; try { localStorage.setItem('codar-stat-hours', STAT_H); } catch(_) {} loadStats().catch(err => toast(err.message, true)); });
@@ -193,8 +273,8 @@ $('#upWin').addEventListener('click', e => { const b = e.target.closest('[data-u
 $('#upReload').onclick = () => loadUpstream().catch(err => toast(err.message, true));
 /* ---- 设置：按用途分组，每项后面一句话说明规则 ---- */
 let SET = null, PRICES = [], SETTINGS_PENDING = 0, SETTINGS_REVISION = 0, SETTINGS_SAVE_QUEUE = Promise.resolve();
-const SET_GROUPS = [['relay', ['use_codar_ua', 'codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill', 'detailed_debug']],
-  ['routing', ['scheduling_strategy', 'max_attempts', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'allow_general_balance']],
+const SET_GROUPS = [['relay', ['use_codar_ua', 'codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill', 'detailed_debug', 'request_debug_scope']],
+  ['routing', ['scheduling_strategy', 'max_attempts', 'proxy_connect_retry', 'proxy_connect_switch', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'restricted_request_block', 'allow_general_balance']],
   ['tasks', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']],
   ['remote', ['allow_remote_management']]];
 let SETTINGS_TAB = 'relay';
@@ -228,12 +308,14 @@ function drawSettings(vals){
   const known = SET_GROUPS.flatMap(g => g[1]), groups = SET_GROUPS.map(g => [g[0], g[1].slice()]);
   SET.schema.forEach(f => { if(!known.includes(f.key)) groups.find(g => g[0] === 'tasks')[1].push(f.key); });
   const field = f => '<div class="set' + (f.type === 'string' ? ' set-text' : '') + '"><div class="set-l"><b>' + esc(f.label) + '</b>' + (f.help ? '<span class="muted">' + esc(f.help) + '</span>' : '') + '</div>'
-    + (f.type === 'bool' ? sw(vals[f.key], f.label, 'data-k="' + f.key + '" title="默认' + (f.default ? '开' : '关') + '"')
+    + (f.type === 'bool' ? (['detailed_debug', 'restricted_request_block'].includes(f.key) ? '<div class="debug-controls">' : '') + sw(vals[f.key], f.label, 'data-k="' + f.key + '" title="默认' + (f.default ? '开' : '关') + '"')
+      + (f.key === 'detailed_debug' ? '<select class="in debug-scope-in" data-k="request_debug_scope" aria-label="请求调试日志范围">' + (SET.request_debug_options || []).map(o => '<option value="' + esc(o.value) + '"' + (o.value === vals.request_debug_scope ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') + '</select></div>' : '')
+      + (f.key === 'restricted_request_block' ? '<button type="button" class="btn ghost sm" data-clear-request-blocklist' + (SET.request_blocklist_count ? '' : ' disabled') + '>清空黑名单（' + (SET.request_blocklist_count || 0) + '）</button></div>' : '')
       : f.type === 'select' ? '<select class="in strategy-in" data-k="' + f.key + '" aria-label="' + esc(f.label) + '">' + (SET.scheduling_options || []).map(o => '<option value="' + esc(o.value) + '"' + (o.value === vals[f.key] ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') + '</select>'
       : f.type === 'string' ? (f.key === 'codar_ua' ? '<div class="ua-controls">' + sw(vals.use_codar_ua, '启用自定义 UA', 'data-k="use_codar_ua" title="开启后替换 UA，关闭后沿用调用方 UA"') : '') + '<input class="in mono text-in" type="text" data-k="' + f.key + '" maxlength="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" autocomplete="off" spellcheck="false">' + (f.key === 'codar_ua' ? '</div>' : '')
       : '<input class="in num-in" type="number" data-k="' + f.key + '" min="' + f.min + '" max="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" title="默认 ' + f.default + '，范围 ' + f.min + ' 至 ' + f.max + '">') + '</div>';
   groups.forEach(g => {
-    document.querySelector('[data-setting-fields="' + g[0] + '"]').innerHTML = g[1].filter(k => k !== 'use_codar_ua').map(k => SET.schema.find(f => f.key === k)).filter(Boolean).map(field).join('');
+    document.querySelector('[data-setting-fields="' + g[0] + '"]').innerHTML = g[1].filter(k => k !== 'use_codar_ua' && k !== 'request_debug_scope').map(k => SET.schema.find(f => f.key === k)).filter(Boolean).map(field).join('');
   });
 }
 function settingValue(el){
@@ -271,12 +353,32 @@ async function loadSettings(){
   SET = d; drawSettings(SET.settings); showSettingsTab(SETTINGS_TAB);
 }
 $('#setGrid').addEventListener('click', async e => {
+  const clear = e.target.closest('[data-clear-request-blocklist]');
+  if(clear){
+    if(clear.disabled) return;
+    clear.disabled = true;
+    try {
+      await api('/request-blocklist/clear', {});
+      SET.request_blocklist_count = 0; clear.textContent = '清空黑名单（0）';
+      toast('请求黑名单已清空');
+    } catch(err){ clear.disabled = false; toast('清空失败：' + err.message, true); }
+    return;
+  }
   const s = e.target.closest('.sw[data-k]'); if(!s || s.disabled || !SET) return;
   const before = s.getAttribute('aria-checked') === 'true';
   s.disabled = true; s.setAttribute('aria-checked', String(!before));
   try { await saveSettingsPatch({[s.dataset.k]: !before}); toast('设置已保存，立即生效'); }
   catch(err){ s.setAttribute('aria-checked', String(before)); toast('保存失败：' + err.message, true); }
   finally { s.disabled = false; }
+});
+$('#setGrid').addEventListener('change', async e => {
+  const select = e.target.closest('select[data-k="request_debug_scope"]');
+  if(!select || select.disabled || !SET) return;
+  const previous = SET.settings.request_debug_scope;
+  select.disabled = true;
+  try { await saveSettingsPatch({request_debug_scope:select.value}); toast('设置已保存，立即生效'); }
+  catch(err){ select.value = previous; toast('保存失败：' + err.message, true); }
+  finally { select.disabled = false; }
 });
 $('#setSave').onclick = async () => {
   if(!SET || SETTINGS_PENDING) return;

@@ -23,7 +23,8 @@ func TestAutomaticPassthroughPreservesBodyQueryAndOrdinaryHeaders(t *testing.T) 
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, responseBody)
 	})
-	h.add(t, "a", nil)
+	upstreamToken := fakeToken("a")
+	h.add(t, "a", M{"token": upstreamToken})
 	h.post(t, "/settings", M{"use_codar_ua": false})
 	if !yes(h.app.store.Settings()["auto_passthrough"]) {
 		t.Fatal("automatic passthrough is not enabled by default")
@@ -68,7 +69,7 @@ func TestAutomaticPassthroughPreservesBodyQueryAndOrdinaryHeaders(t *testing.T) 
 				t.Fatalf("%s leaked header %s", path, name)
 			}
 		}
-		if got.header.Get("Authorization") != "Bearer "+fakeToken("a") || got.header.Get("Authorization") == "Bearer "+h.key {
+		if got.header.Get("Authorization") != "Bearer "+upstreamToken || got.header.Get("Authorization") == "Bearer "+h.key {
 			t.Fatal("upstream authentication was not replaced")
 		}
 		if got.header.Get("User-Agent") != "Caller-SDK/1.0" || got.header.Get("Content-Type") != "application/json; charset=utf-8" || got.header.Get("OpenAI-Beta") != "responses=v1" || got.header.Get("X-Stainless-Lang") != "python" || len(got.header.Values("X-Extension")) != 2 {

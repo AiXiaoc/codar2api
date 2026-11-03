@@ -19,8 +19,15 @@ const dur2s = s => { s = Math.max(0, Math.ceil(s)); return s >= 3600 ? Math.floo
 const ago = t => { const s = Date.now() / 1000 - t; return !t ? '-' : s < 60 ? '刚刚' : s < 3600 ? Math.floor(s / 60) + ' 分钟前' : s < 86400 ? Math.floor(s / 3600) + ' 小时前' : Math.floor(s / 86400) + ' 天前'; };
 const num = v => typeof v === 'number' && isFinite(v) ? v : null;
 const nf = v => v == null ? '-' : Number(v).toLocaleString('en-US');
-const fmtTok = v => { v = Number(v) || 0; const t = (x, d) => String(Math.round(x * 10 ** d) / 10 ** d);
-  return v >= 1e8 ? t(v / 1e8, 2) + ' 亿' : v >= 1e4 ? t(v / 1e4, 1) + ' 万' : String(Math.round(v)); };
+const fmtTok = v => {
+  v = Number(v) || 0;
+  if(v < 1e3) return String(Math.round(v));
+  const units = ['', 'K', 'M', 'B'];
+  let unit = v >= 1e9 ? 3 : v >= 1e6 ? 2 : 1;
+  let value = Math.round(v / 1e3 ** unit * 100) / 100;
+  if(value >= 1000 && unit < 3){ unit++; value = 1; }
+  return String(value) + units[unit];
+};
 const pctS = v => v == null ? '-' : (Math.round(v * 1000) / 10) + '%';
 const yuan = v => v == null ? '-' : '¥' + (v >= 100 ? nf(Math.round(v)) : v >= 1 ? (Math.round(v * 100) / 100).toFixed(2) : (Math.round(v * 10000) / 10000));
 const I = {
@@ -82,16 +89,25 @@ async function api(path, body, keepalive = false){
 /* 弹窗：打开时记住焦点，关闭时还回去；个别弹窗关闭前要做清理，登记在 MODAL_CLOSE */
 const MODAL_CLOSE = {};
 let MODAL_FOCUS = null;
+let MODAL_BACKDROP_PRESS = null;
 function openModal(id, focus){
   MODAL_FOCUS = document.activeElement; $(id).hidden = false;
   setTimeout(() => { const el = (focus && $(focus)) || $(id + ' input:not([type=hidden]),' + id + ' button'); if(el) el.focus(); }, 30);
 }
 function closeModal(id){ const m = $(id); if(!m || m.hidden) return; m.hidden = true; if(MODAL_FOCUS && MODAL_FOCUS.isConnected) MODAL_FOCUS.focus(); }
 const requestClose = (id, how) => (MODAL_CLOSE[id] || closeModal)(id, how);
+document.addEventListener('pointerdown', e => {
+  MODAL_BACKDROP_PRESS = e.button === 0 && e.target.classList.contains('modal-back') ? e.target : null;
+});
+document.addEventListener('pointerup', e => {
+  if(e.button !== 0 || e.target !== MODAL_BACKDROP_PRESS) MODAL_BACKDROP_PRESS = null;
+});
+document.addEventListener('pointercancel', () => { MODAL_BACKDROP_PRESS = null; });
 document.addEventListener('click', e => {
   const back = e.target.closest('.modal-back'); if(!back) return;
-  if(e.target === back) requestClose('#' + back.id, 'backdrop');
+  if(e.target === back && e.button === 0 && MODAL_BACKDROP_PRESS === back) requestClose('#' + back.id, 'backdrop');
   else if(e.target.closest('[data-close-modal]')) requestClose('#' + back.id, 'button');
+  MODAL_BACKDROP_PRESS = null;
 });
 document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
