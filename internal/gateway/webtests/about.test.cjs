@@ -97,7 +97,7 @@ test('panel startup checks once and checks again every six hours', async () => {
   const h = harness(), timers = [];
   const resolved = () => Promise.resolve();
   Object.assign(h.context, {
-    decorate:() => {}, loadAnnouncements:resolved, load:resolved, loadConcurrency:resolved, loadRate:() => {},
+    decorate:() => {}, loadAnnouncements:resolved, load:resolved, loadConcurrency:resolved, loadRate:() => {}, loadPointSpending:resolved,
     localStorage:{getItem:() => null}, setInterval:(callback, ms) => timers.push({callback, ms})
   });
   vm.runInContext(pages.slice(pages.indexOf('/* ---- 启动 ---- */')), h.context);

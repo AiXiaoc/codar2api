@@ -175,7 +175,8 @@ func TestIndependentAuthenticationAndKeyScope(t *testing.T) {
 		t.Fatal("API key authorized administration")
 	}
 	resp, b := h.request(t, "GET", "/v1/models", nil, true)
-	if resp.StatusCode != 200 || len(arr(decode(t, b)["data"])) != 1 {
+	models := arr(decode(t, b)["data"])
+	if resp.StatusCode != 200 || len(models) != 1+len(codarImageModels) || obj(models[0])["id"] != "auto" {
 		t.Fatal("model listing failed")
 	}
 	key := h.post(t, "/keys", M{"action": "create", "name": "limited", "models": []any{"allowed"}})

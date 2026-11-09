@@ -63,46 +63,89 @@ $('#importGo').onclick = async () => {
 };
 /* ---- 调用测试：选模型、写提示词，经这个账号的出口发一次非流式请求 ---- */
 let CALL_UID = '', CALL_GENERATION = 0, CALL_BUSY = false;
+let CALL_IMAGE_MODELS = new Set();
+function updateCallMode(){
+  const image = CALL_IMAGE_MODELS.has($('#callModel').value), prompt = $('#callPrompt');
+  $('#callImageOptions').hidden = !image;
+  $('#callGoText').textContent = image ? '生成图片' : '发送';
+  $('#callHint').textContent = image ? 'Ctrl + Enter 生成 · 经该账号的出口发出，完成后显示图片' : 'Ctrl + Enter 发送 · 最多输出 1024 token，经该账号的出口发出';
+  prompt.maxLength = image ? 16000 : 8000;
+  prompt.placeholder = image ? '描述要生成的图片' : '';
+  if(image && prompt.value === 'Hi') prompt.value = '';
+  if(!image && !prompt.value) prompt.value = 'Hi';
+}
 async function openCall(a){
   const generation = ++CALL_GENERATION;
-  CALL_UID = a.uid;
+  CALL_UID = a.uid; CALL_BUSY = false; CALL_IMAGE_MODELS = new Set();
   $('#callTitle').textContent = '调用 · ' + (a.username || a.uid);
   $('#callPrompt').value = 'Hi'; $('#callOut').innerHTML = ''; $('#callGo').disabled = true;
+  $('#callSize').value = '16:9'; $('#callResolution').value = '1K';
   const sel = $('#callModel');
   sel.innerHTML = '<option>正在读取模型…</option>'; sel.disabled = true;
+  updateCallMode();
   openModal('#callModal', '#callPrompt');
-  let models = [];
-  try { models = (await api('/accounts/catalog?uid=' + encodeURIComponent(a.uid))).models || []; }
-  catch(err){
-    if(generation !== CALL_GENERATION) return;
-    $('#callOut').innerHTML = '<div class="notice bad">读取模型目录失败：' + esc(err.message) + '</div>';
-  }
+  let catalog;
+  try { catalog = await api('/accounts/catalog?uid=' + encodeURIComponent(a.uid)); }
+  catch(err){ catalog = {warning:err.message}; }
   if(generation !== CALL_GENERATION || CALL_UID !== a.uid) return;
-  const free = a.free_models || [], list = models.map(m => ({id: m.id, name: m.name || m.id}));
+  if(catalog.warning) $('#callOut').innerHTML = '<div class="notice bad">读取对话目录失败：' + esc(catalog.warning) + '</div>';
+  const models = catalog.models || [], images = models.filter(m => m.type === 'image');
+  CALL_IMAGE_MODELS = new Set(images.map(m => m.id));
+  const free = (a.free_models || []).filter(id => !CALL_IMAGE_MODELS.has(id));
+  const list = models.filter(m => m.type !== 'image');
   free.filter(id => !list.some(m => m.id === id)).forEach(id => list.push({id, name: id}));
   list.sort((x, y) => free.includes(y.id) - free.includes(x.id));
+  if(!list.length) list.push({id:'auto', name:'auto'});
   let last = ''; try { last = localStorage.getItem('codar-call-model') || ''; } catch(e) {}
-  const pick = list.some(m => m.id === last) ? last : free[0] || (list.some(m => m.id === 'auto') ? 'auto' : (list[0] || {}).id);
-  sel.innerHTML = list.map(m => '<option value="' + esc(m.id) + '"' + (m.id === pick ? ' selected' : '') + '>' + (free.includes(m.id) ? '免费 · ' : '') + esc(m.name) + (m.name !== m.id ? '（' + esc(m.id) + '）' : '') + '</option>').join('')
-    || '<option value="auto">auto</option>';
+  const pick = list.some(m => m.id === last) || CALL_IMAGE_MODELS.has(last) ? last : free[0] || (list.some(m => m.id === 'auto') ? 'auto' : list[0].id);
+  const options = rows => rows.map(m => {
+    const name = m.name || m.id;
+    return '<option value="' + esc(m.id) + '"' + (m.id === pick ? ' selected' : '') + '>' + (free.includes(m.id) ? '免费 · ' : '') + esc(name) + (name !== m.id ? '（' + esc(m.id) + '）' : '') + '</option>';
+  }).join('');
+  sel.innerHTML = '<optgroup label="对话">' + options(list) + '</optgroup>' + (images.length ? '<optgroup label="生图">' + options(images) + '</optgroup>' : '');
+  sel.value = pick;
   sel.disabled = false;
+  updateCallMode();
   $('#callGo').disabled = false;
 }
-$('#callForm').onsubmit = async e => {
-  e.preventDefault(); if(CALL_BUSY || !CALL_UID) return;
-  const model = $('#callModel').value, prompt = $('#callPrompt').value.trim() || 'Hi', uid = CALL_UID;
-  try { localStorage.setItem('codar-call-model', model); } catch(_) {}
-  CALL_BUSY = true; $('#callGo').disabled = true; $('#callOut').innerHTML = spinner('正在调用 ' + model + '…');
+function callImagePreview(result){
+  const image = (result.data || [])[0] || {};
+  if(/^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd\.microsoft\.icon|avif)$/.test(image.mime_type || '')
+      && typeof image.b64_json === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(image.b64_json)) {
+    return '<img class="call-image" alt="生成的图片" decoding="async" src="data:' + image.mime_type + ';base64,' + image.b64_json + '">';
+  }
   try {
-    const r = await api('/accounts/test', {uid, model, prompt, max_tokens: 1024});
-    if(uid !== CALL_UID) return;
+    const link = new URL(image.url);
+    if((link.protocol === 'https:' || link.protocol === 'http:') && !link.username && !link.password){
+      const url = esc(link.href);
+      return '<img class="call-image" alt="生成的图片" decoding="async" referrerpolicy="no-referrer" src="' + url + '"><a class="link" href="' + url + '" target="_blank" rel="noopener noreferrer">打开原图</a>';
+    }
+  } catch(_) {}
+  return '<div class="notice bad">未收到可预览的图片</div>';
+}
+$('#callModel').addEventListener('change', updateCallMode);
+$('#callForm').onsubmit = async e => {
+  e.preventDefault();
+  const sel = $('#callModel');
+  if(CALL_BUSY || !CALL_UID || sel.disabled) return;
+  const model = sel.value, uid = CALL_UID, generation = CALL_GENERATION, image = CALL_IMAGE_MODELS.has(model);
+  const input = $('#callPrompt').value.trim();
+  if(image && !input){ $('#callOut').innerHTML = '<div class="notice bad">请输入生图提示词</div>'; return; }
+  const p = {uid, model, prompt:input || 'Hi'};
+  if(image){ p.size = $('#callSize').value.trim() || '16:9'; p.resolution = $('#callResolution').value; }
+  else p.max_tokens = 1024;
+  try { localStorage.setItem('codar-call-model', model); } catch(_) {}
+  CALL_BUSY = true; sel.disabled = $('#callGo').disabled = true; $('#callOut').innerHTML = spinner(image ? '正在生成图片…' : '正在调用 ' + model + '…');
+  try {
+    const r = await api('/accounts/test', p);
+    delete RCACHE[uid];
+    if(generation !== CALL_GENERATION) return;
     const u = r.usage || {};
     $('#callOut').innerHTML = r.ok ? '<div class="call-meta"><span><b class="ok-t">成功</b></span><span class="mono">' + esc(r.model) + '</span><span>耗时 <b>' + nf(r.elapsed_ms) + '</b> ms</span>'
-        + (r.usage ? tokenLine(u.prompt, u.completion, u.cached) : '') + '</div><pre class="reply">' + esc(r.reply || '（上游返回了空内容）') + '</pre>'
+        + (r.usage ? tokenLine(u.prompt, u.completion, u.cached) : '') + '</div>' + (image ? callImagePreview(r) : '<pre class="reply">' + esc(r.reply || '（上游返回了空内容）') + '</pre>')
       : '<div class="notice bad"><b>调用失败</b>（' + esc(r.model || model) + '）：' + esc(r.error) + '</div>';
-    delete RCACHE[uid];
-  } catch(err){ $('#callOut').innerHTML = '<div class="notice bad"><b>调用失败</b>：' + esc(err.message) + '</div>'; }
-  finally { CALL_BUSY = false; $('#callGo').disabled = false; }
+  } catch(err){ if(generation === CALL_GENERATION) $('#callOut').innerHTML = '<div class="notice bad"><b>调用失败</b>：' + esc(err.message) + '</div>'; }
+  finally { if(generation === CALL_GENERATION){ CALL_BUSY = false; sel.disabled = $('#callGo').disabled = false; } }
 };
 $('#callPrompt').addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); $('#callForm').requestSubmit(); } });
-MODAL_CLOSE['#callModal'] = id => { CALL_UID = ''; CALL_GENERATION++; closeModal(id); };
+MODAL_CLOSE['#callModal'] = id => { CALL_UID = ''; CALL_GENERATION++; $('#callOut').innerHTML = ''; closeModal(id); };

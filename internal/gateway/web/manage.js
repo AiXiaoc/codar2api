@@ -86,6 +86,13 @@ $('#keysBody').onclick = async e => {
   catch(err){ managementError(err); b.disabled = false; }
 };
 /* 代理池 */
+function proxyRequestStats(p){
+  const s = p.stats || {};
+  return '<span class="proxy-stats" aria-label="请求统计"><span title="请求数">请求 <b>' + nf(s.requests || 0) + '</b></span>'
+    + '<span title="成功数">成功 <b class="ok-t">' + nf(s.succeeded || 0) + '</b></span>'
+    + '<span title="失败数">失败 <b class="' + (s.failed ? 'bad-t' : '') + '">' + nf(s.failed || 0) + '</b></span>'
+    + '<span title="成功率">成功率 <b>' + pctS(s.success_rate) + '</b></span></span>';
+}
 async function loadProxies(){
   const d = await api('/proxy-pool'), direct = d.direct || {}; MANAGED_PROXIES = d.proxies;
   const used = id => {
@@ -96,12 +103,12 @@ async function loadProxies(){
   const blocked = (p, id) => p.blocked ? '<div class="l-use"><span class="bad-t small" style="overflow-wrap:anywhere">' + esc(p.blocked_reason || '上游拒绝了这个 IP') + '</span><div class="muted">' + ago(p.blocked_at) + '封控</div></div>' : '';
   const unblockBtn = (p, id) => p.blocked ? '<button type="button" class="btn soft sm" data-pool-action="unblock" data-id="' + id + '">解除封控</button>' : '';
   const ipChip = p => p.blocked ? chip('bad sm', '<i class="pt"></i>IP 封控', p.blocked_reason) : '';
-  $('#proxiesBody').innerHTML = '<article class="proxy"><span class="l-ico">' + ic('pc') + '</span><div class="l-main"><div class="nm"><b>直连</b>' + ipChip(direct) + '</div><div class="mono">网关本机出口 IP，不经过代理</div></div>'
+  $('#proxiesBody').innerHTML = '<article class="proxy"><span class="l-ico">' + ic('pc') + '</span><div class="l-main"><div class="nm"><b>直连</b>' + ipChip(direct) + '</div><div class="proxy-meta-line"><span class="mono" title="网关本机出口 IP，不经过代理">网关本机出口 IP，不经过代理</span><span class="proxy-stats-wrap" data-proxy-stats-id="0">' + proxyRequestStats(direct) + '</span></div></div>'
     + (blocked(direct, 0) || '<div class="l-use">' + chip('ok sm', '<i class="pt"></i>正常') + '</div>') + used(0) + unblockBtn(direct, 0) + '</article>'
     + d.proxies.map(p => {
     const c = p.check;
     return '<article class="proxy' + (p.enabled ? '' : ' is-off') + '"><span class="l-ico">' + ic('globe') + '</span><div class="l-main"><div class="nm"><b>' + esc(p.name) + '</b><span class="muted">#' + p.id + '</span>'
-      + (p.authenticated ? chip('sm', ic('lock') + '认证') : '') + ipChip(p) + '</div><div class="mono">' + esc(p.address) + '</div></div>'
+      + (p.authenticated ? chip('sm', ic('lock') + '认证') : '') + ipChip(p) + '</div><div class="proxy-meta-line"><span class="mono" title="' + esc(p.address) + '">' + esc(p.address) + '</span><span class="proxy-stats-wrap" data-proxy-stats-id="' + p.id + '">' + proxyRequestStats(p) + '</span></div></div>'
       + (blocked(p, p.id) || '<div class="l-use">' + (c ? (c.ok ? chip('ok sm', '<i class="pt"></i>' + c.latency_ms + ' ms') : chip('bad sm', '<i class="pt"></i>不可用', c.error)) + '<div class="muted">' + ago(c.at) + '检测</div>'
         + (!c.ok && c.error ? '<div class="bad-t small" style="overflow-wrap:anywhere">' + esc(c.error) + '</div>' : '') : '<span class="muted">还没检测</span>') + '</div>')
       + used(p.id) + unblockBtn(p, p.id) + sw(p.enabled, '启用代理 ' + p.name, 'data-pool-action="toggle" data-id="' + p.id + '"')
@@ -110,6 +117,19 @@ async function loadProxies(){
       + '<button type="button" class="ibtn sm danger" data-pool-action="delete" data-id="' + p.id + '" title="删除" aria-label="删除代理 ' + esc(p.name) + '">' + ic('trash') + '</button></article>';
   }).join('') + (d.proxies.length ? '' : '<div class="empty-box">还没有代理，支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H</div>');
   await loadProxyPool();
+}
+let PROXY_STATS_LOADING = false;
+async function refreshProxyStats(){
+  if(document.hidden || document.querySelector('[data-page="proxies"]').hidden || PROXY_STATS_LOADING) return;
+  PROXY_STATS_LOADING = true;
+  try {
+    const d = await api('/proxy-pool');
+    const exits = new Map([[0, d.direct || {}], ...d.proxies.map(p => [p.id, p])]);
+    document.querySelectorAll('[data-proxy-stats-id]').forEach(el => {
+      const p = exits.get(Number(el.dataset.proxyStatsId));
+      if(p) el.innerHTML = proxyRequestStats(p);
+    });
+  } finally { PROXY_STATS_LOADING = false; }
 }
 function openPoolModal(p){
   $('#proxyForm').reset(); $('#proxyEditID').value = p ? p.id : ''; $('#poolTitle').textContent = p ? '编辑代理' : '添加代理';

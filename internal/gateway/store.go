@@ -165,11 +165,13 @@ var schema = []settingSpec{
 	{"use_codar_ua", "bool", true, nil, nil, "启用自定义 UA", "关闭后 API 请求沿用调用方 UA，面板测试和模型目录使用 Go HTTP 客户端 UA。"},
 	{"codar_ua", "string", defaultCodarUA, nil, 1024, "自定义 UA", "开启后模型请求、模型目录和面板测试使用右侧 UA；关闭后 API 沿用调用方 UA。"},
 	{"auto_passthrough", "bool", true, nil, nil, "自动透传", "保留原始正文、查询参数和普通请求头，仍按启用的 UA 和提示词规则处理；不转发本地鉴权、Cookie 和连接控制头。"},
+	{"image_result_base64", "bool", false, nil, nil, "图片结果转 Base64", "开启后网关下载生图结果并返回 Base64；关闭时返回上游图片链接。等待模式和任务查询都适用。"},
 	{"detailed_debug", "bool", false, nil, nil, "启用请求调试日志", "记录所选范围内请求的完整请求头、请求体和响应；内容可能包含凭证与对话。"},
 	{"request_debug_scope", "select", "errors", nil, nil, "请求调试日志范围", "全部请求、正常请求或错误请求；错误请求包括失败重试后成功的请求。"},
 	{"allow_remote_management", "bool", true, nil, nil, "允许远程访问", "开启后允许从其他主机访问管理页面和管理接口，仍需管理员密钥；关闭后仅允许本机管理，API Key 调用不受影响。"},
-	{"dsh_identity_rewrite", "bool", true, nil, nil, "身份提示词替换", "在系统或开发者提示词首行加入 Codar 身份描述，保留原有内容。"},
-	{"identity_first_line_fill", "bool", true, nil, nil, "身份提示词首行填充", "在系统或开发者提示词首行开头添加一个点、一个零宽空格（U+200B）和字母 X。"},
+	{"dsh_identity_rewrite", "bool", true, nil, nil, "身份提示词替换", "将系统或开发者提示词开头的 DSH 身份替换为中性身份，并在首行加入 Codar 身份描述，保留其他内容。"},
+	{"identity_first_line_fill", "bool", true, nil, nil, "身份提示词首行填充", "在系统或开发者提示词首行开头直接添加 8～16 个随机英文字母。"},
+	{"historical_tool_as_user", "bool", false, nil, nil, "历史 tool 回复改为 user", "支持 Chat Completions、Messages 和 Responses：保留末尾本轮工具结果，将历史结果改为带 tool_result 标签的用户内容；保留工具调用与定义，并补充对应协议的提示说明。"},
 	{"auto_claim", "bool", true, nil, nil, "自动领取免费模型活动", "导入与后台检查时自动领取可参加的免费模型活动。"},
 	{"allow_general_balance", "bool", true, nil, nil, "允许使用通用余额", "Agent 余额用完后允许使用通用余额。"},
 	{"auto_renew_token", "bool", true, nil, nil, "令牌自动续期", "令牌接近到期时自动续期。"},
@@ -663,11 +665,11 @@ func modelUnavailable(a M, model string, settings M, manual bool) string {
 		return "令牌已过期，请重新导入"
 	}
 	free := freeModels(a, t)
-	isFree := contains(free, model) || (model == "" && len(free) > 0)
-	if num(a["cooldown_until"]) > t && !(a["cooldown_kind"] == "balance" && isFree) {
+	ignoresBalance := isCodarImageModel(model) || contains(free, model) || (model == "" && len(free) > 0)
+	if num(a["cooldown_until"]) > t && !(a["cooldown_kind"] == "balance" && ignoresBalance) {
 		return fmt.Sprintf("冷却中（%s，还有 %d 秒）", str(a["cooldown_reason"], "上游错误"), int(num(a["cooldown_until"])-t))
 	}
-	if !isFree {
+	if !ignoresBalance {
 		if bal, ok := spendable(a, yes(settings["allow_general_balance"])); ok && bal <= 0 {
 			if model == "" {
 				return "余额不足，已暂停调度"

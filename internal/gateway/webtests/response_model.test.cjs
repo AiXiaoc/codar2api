@@ -8,7 +8,9 @@ const read = name => fs.readFileSync(path.join(__dirname, '../web', name), 'utf8
 const ui = read('ui.js'), drawer = read('drawer.js'), pages = read('pages.js'), css = read('app2.css');
 const helperCode = ui.slice(ui.indexOf('function requestModelLabel('), ui.indexOf('\nconst fmt ='));
 const accountCode = drawer.slice(drawer.indexOf('function recItem('), drawer.indexOf('\nfunction dRequests('));
-const statsCode = pages.slice(pages.indexOf('async function loadStats('), pages.indexOf('\nlet DETAIL_GENERATION'));
+const recent = read('recent-requests.js');
+const recentCode = recent.slice(recent.indexOf('function recentRequestRow('), recent.indexOf('\nfunction loadRecentRequests('));
+const statsCode = pages.slice(pages.indexOf('let STATS_GENERATION ='), pages.indexOf('\nlet DETAIL_GENERATION'));
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
 
 async function render(record){
@@ -22,9 +24,9 @@ async function render(record){
     api:async () => ({total:{requests:1, stream:0}, models:[], accounts:[], recent:[record]}),
     kpi:() => '', tip:() => '', pctS:() => '', fmtTok:() => '', round1:() => '',
     yuan:() => '', n:() => '', rateCls:() => '', fmt:() => '', fmtT:() => '',
-    chip:() => '', tokenLine:() => ''
+    chip:() => '', tokenLine:() => '', loadRecentRequests:async () => {element('#statRecent').innerHTML = context.recentRequestRow(record);}
   });
-  vm.runInContext(helperCode + '\n' + accountCode + '\n' + statsCode, context);
+  vm.runInContext(helperCode + '\n' + accountCode + '\n' + recentCode + '\n' + statsCode, context);
   context.record = record;
   const accountHTML = vm.runInContext('recItem(record)', context);
   await vm.runInContext('loadStats()', context);

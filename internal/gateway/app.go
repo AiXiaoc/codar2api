@@ -70,29 +70,33 @@ func (c *Config) defaults() {
 }
 
 type App struct {
-	cfg           Config
-	store         *Store
-	auth          *Auth
-	proxies       *ProxyPool
-	usage         *UsageLog
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	gates         chan struct{}
-	ops           sync.Map
-	catalogMu     sync.Mutex
-	annMu         sync.Mutex
-	ann           M
-	rateMu        sync.Mutex
-	rate          M
-	loginMu       sync.Mutex
-	importMu      sync.Mutex
-	flows         map[string]M
-	qr            map[string]M
-	priceDefaults M
-	diagnostics   *requestDiagnosticLog
-	updates       *releaseChecker
-	requestBlocks *requestBlocklist
+	cfg            Config
+	store          *Store
+	auth           *Auth
+	proxies        *ProxyPool
+	usage          *UsageLog
+	points         *pointSpendLog
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	gates          chan struct{}
+	ops            sync.Map
+	catalogMu      sync.Mutex
+	annMu          sync.Mutex
+	ann            M
+	rateMu         sync.Mutex
+	rate           M
+	loginMu        sync.Mutex
+	importMu       sync.Mutex
+	flows          map[string]M
+	qr             map[string]M
+	priceDefaults  M
+	diagnostics    *requestDiagnosticLog
+	updates        *releaseChecker
+	requestBlocks  *requestBlocklist
+	imageTasks     *codarImageTasks
+	imageClient    *http.Client
+	imageDownloads chan struct{}
 }
 
 func New(cfg Config) (*App, string, error) {
@@ -113,6 +117,10 @@ func New(cfg Config) (*App, string, error) {
 	if e != nil {
 		return nil, "", e
 	}
+	points, e := newPointSpendLog(cfg.DataDir, "ledger")
+	if e != nil {
+		return nil, "", e
+	}
 	requestBlocks, e := newRequestBlocklist(cfg.DataDir)
 	if e != nil {
 		return nil, "", e
@@ -120,6 +128,10 @@ func New(cfg Config) (*App, string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{cfg: cfg, store: store, auth: auth, proxies: proxies, usage: usage, ctx: ctx, cancel: cancel, gates: make(chan struct{}, cfg.MaxConcurrent), ann: M{"items": []any{}}, rate: M{}, flows: map[string]M{}, qr: map[string]M{}, updates: newReleaseChecker()}
 	a.requestBlocks = requestBlocks
+	a.points = points
+	a.imageTasks = newCodarImageTasks()
+	a.imageClient = newCodarImageClient()
+	a.imageDownloads = make(chan struct{}, 4)
 	if cfg.RequestDiagnostics {
 		a.diagnostics = &requestDiagnosticLog{path: filepath.Join(cfg.DataDir, "request-diagnostics.jsonl")}
 		log.Printf("request diagnostics enabled: %s", a.diagnostics.path)
@@ -135,8 +147,10 @@ func New(cfg Config) (*App, string, error) {
 func (a *App) Close() error {
 	a.cancel()
 	a.wg.Wait()
+	a.imageTasks.close()
+	a.imageClient.CloseIdleConnections()
 	a.proxies.Close()
-	return errors.Join(a.store.Flush(), a.auth.Flush(), a.usage.Flush())
+	return errors.Join(a.store.Flush(), a.auth.Flush(), a.usage.Flush(), a.points.Flush(), a.proxies.Flush())
 }
 func (a *App) lockAccount(uid string) func() {
 	m, _ := a.ops.LoadOrStore(uid, &sync.Mutex{})
@@ -209,6 +223,8 @@ func isChat(path string) bool {
 }
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	image := path == codarImageGenerationPath
+	imageTask := strings.HasPrefix(path, codarImageTaskPath)
 	if a.diagnostics != nil && isChat(path) && r.Method == "POST" {
 		var finish func()
 		w, r, finish = a.diagnostics.begin(w, r)
@@ -222,14 +238,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 500, "内部错误，请检查服务日志")
 		}
 	}()
-	public := isChat(path) || path == "/v1/models" || path == "/ping" || path == "/health"
+	public := isChat(path) || image || imageTask || path == "/v1/models" || path == "/ping" || path == "/health"
 	if !public && !yes(a.store.Settings()["allow_remote_management"]) && !localManagementRequest(r) {
 		apiError(w, http.StatusForbidden, "远程管理未开启，请在运行网关的本机进入「设置 → 远程管理」开启允许远程访问")
 		return
 	}
-	if isChat(path) || path == "/v1/models" {
+	if isChat(path) || image || imageTask || path == "/v1/models" {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, X-Codar-Account")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, X-Codar-Account, X-Codar-Catalog-Partial, Location, Retry-After")
 		if r.Method == "OPTIONS" {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key, Anthropic-Version, Anthropic-Beta, Anthropic-Dangerous-Direct-Browser-Access, OpenAI-Beta, X-Session-Id, X-Conversation-Id")
@@ -237,6 +253,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+	}
+	if imageTask {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET, OPTIONS")
+			apiError(w, http.StatusMethodNotAllowed, "生图任务查询仅支持 GET")
+			return
+		}
+		a.serveImageTask(w, r, strings.TrimPrefix(path, codarImageTaskPath))
+		return
 	}
 	if r.Method == "GET" && (path == "/ping" || path == "/health") {
 		jsonResponse(w, 200, M{"ok": true, "platform": "codar", "version": Version})
@@ -258,8 +283,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(b)
 		return
 	}
-	if path == "/favicon.ico" {
-		w.WriteHeader(204)
+	if (r.Method == "GET" || r.Method == "HEAD") && (path == "/favicon.png" || path == "/favicon.ico") {
+		b, e := assets.ReadFile("web/favicon.png")
+		if e != nil {
+			apiError(w, 500, "图标缺失")
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeContent(w, r, "favicon.png", time.Time{}, bytes.NewReader(b))
 		return
 	}
 	if path == "/auth/login" && r.Method == "POST" {
@@ -284,26 +316,26 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 200, M{"ok": true})
 		return
 	}
-	if (isChat(path) && r.Method == "POST") || (path == "/v1/models" && r.Method == "GET") {
+	if ((isChat(path) || image) && r.Method == "POST") || (path == "/v1/models" && r.Method == "GET") {
 		// Every public model endpoint requires an API key, even with an admin cookie.
 		key, e := a.auth.API(r, "")
 		if e != nil {
 			apiError(w, 401, e.Error())
 			return
 		}
-		if isChat(path) {
+		if isChat(path) || image {
 			var finish func()
 			w, r, finish = a.beginDetail(w, r)
 			defer finish()
 		}
 		if path == "/v1/models" {
-			models, e := a.catalog(r.Context(), false)
-			if e != nil && len(models) == 0 {
-				apiError(w, 502, e.Error())
-				return
+			var models []any
+			var catalogErr error
+			if catalogNeedsChat(key) {
+				models, catalogErr = a.catalog(r.Context(), false)
 			}
 			out := []any{}
-			for _, v := range models {
+			for _, v := range imageModelCatalog(models) {
 				m := obj(v)
 				allowed := len(arr(key["models"])) == 0
 				for _, id := range arr(key["models"]) {
@@ -312,8 +344,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if allowed {
-					out = append(out, M{"id": m["id"], "object": "model", "owned_by": "codar"})
+					entry := M{"id": m["id"], "object": "model", "owned_by": "codar"}
+					if m["type"] == "image" {
+						entry["type"], entry["output_modalities"] = "image", m["output_modalities"]
+					}
+					out = append(out, entry)
 				}
+			}
+			if catalogErr != nil {
+				if len(out) == 0 {
+					apiError(w, http.StatusBadGateway, catalogErr.Error())
+					return
+				}
+				w.Header().Set("X-Codar-Catalog-Partial", "true")
 			}
 			jsonResponse(w, 200, M{"object": "list", "data": out})
 			return
@@ -321,6 +364,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p, e := payload(w, r)
 		if e != nil {
 			apiError(w, 400, e.Error())
+			return
+		}
+		if image {
+			a.serveImage(w, r, p, key, nil)
 			return
 		}
 		if _, e = a.auth.API(r, text(p["model"])); e != nil {
@@ -384,6 +431,17 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 405, "不支持的请求方法")
 		return
 	}
+	if path == "/accounts/test" && r.Method == http.MethodPost && isCodarImageModel(strings.TrimSpace(text(p["model"]))) {
+		account, err := a.account(text(p["uid"]))
+		if err != nil {
+			apiError(w, 404, err.Error())
+			return
+		}
+		delete(p, "uid")
+		delete(p, "max_tokens")
+		a.serveImage(w, r, p, nil, account)
+		return
+	}
 	result, status, e := a.panel(r, path, p)
 	if e != nil {
 		apiError(w, status, e.Error())
@@ -412,6 +470,9 @@ func (a *App) maintenance() {
 			}
 			if e := a.auth.Flush(); e != nil {
 				log.Printf("keys flush failed: %v", e)
+			}
+			if e := a.proxies.Flush(); e != nil {
+				log.Printf("proxy statistics flush failed: %v", e)
 			}
 			if !a.cfg.NoBackground && time.Since(last) >= 30*time.Second {
 				select {

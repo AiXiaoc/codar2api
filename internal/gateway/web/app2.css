@@ -28,9 +28,11 @@ details.more{margin-top:14px}details.more summary{cursor:pointer;font-size:13px;
 .m-name{display:flex;flex:1;flex-direction:column;min-width:0;line-height:1.35}.m-name b{font-size:15.5px;overflow-wrap:anywhere}.m-name .mono{font-size:12px;overflow-wrap:anywhere}
 .m-caps,.m-lv{display:flex;flex-wrap:wrap;gap:5px}
 .m-spec{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0}.m-spec dt{color:var(--muted);font-size:11.5px}.m-spec dd{margin:0;font-weight:800}
+.m-spec-image{grid-template-columns:minmax(0,1fr) max-content}.m-spec-image .mono{overflow-wrap:anywhere}.m-resolution{white-space:nowrap}
 .lv{padding:0 9px;border:1.5px solid var(--ink);border-radius:999px;background:var(--purple-soft);color:var(--think);font-size:11.5px;font-weight:800}.lv.def{background:var(--purple);color:var(--ink)}
 .m-price{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:auto;padding-top:10px;border-top:2px dashed var(--soft);font-size:12.5px}
 .m-price span{padding:0 9px;border:1.5px solid var(--ink);border-radius:999px;background:#fff}.m-price em{margin-left:auto;color:var(--muted);font-size:11px;font-style:normal}
+[data-concurrency-uid].concurrency-active{color:#d97706}[data-concurrency-uid].concurrency-full{color:#dc2626}
 /* API Key / 代理池 */
 .base-url{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:22px;padding:13px 18px}.base-url code{color:var(--pink-deep);font:800 15px var(--mono);overflow-wrap:anywhere}
 .list{display:flex;flex-direction:column;gap:16px}
@@ -39,6 +41,8 @@ details.more{margin-top:14px}details.more summary{cursor:pointer;font-size:13px;
 .list>:nth-child(3n+2) .l-ico{background:var(--pink)}.list>:nth-child(3n) .l-ico{background:var(--blue)}
 .l-main{flex:1;min-width:0}.l-main .mono{color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}.l-main .nm{cursor:default}
 .l-meta{width:200px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}.l-use{width:150px;font-size:12.5px}
+.proxy-meta-line{display:flex;align-items:center;gap:10px;min-width:0}.proxy-meta-line .mono{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proxy-stats-wrap{flex:none}.proxy-stats{display:inline-flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);white-space:nowrap}.proxy-stats b{font-weight:600}
+@media (max-width:600px){.proxy .l-main{flex-basis:calc(100% - 54px)}}
 /* 设置 */
 .sets{display:flex;flex-direction:column}.set{display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:2px dashed var(--soft)}.set:last-child{border-bottom:0}
 .set-l{display:flex;flex:1;flex-direction:column}.set-l b{font-weight:800}.set-l .muted{font-size:12px}
@@ -112,6 +116,8 @@ details.more{margin-top:14px}details.more summary{cursor:pointer;font-size:13px;
 textarea.prompt{min-height:96px;font:14px/1.6 var(--font)}
 .reply{max-height:320px;margin:0;overflow:auto;padding:12px 14px;border:2px solid var(--ink);border-radius:var(--r-sm);background:#fff;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.65 var(--font)}
 .call-meta{display:flex;flex-wrap:wrap;gap:2px 14px;margin:0 0 8px;color:var(--muted);font-size:12.5px}.call-meta b{color:var(--ink)}
+.call-image-options:not([hidden]){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.call-image{display:block;max-width:100%;max-height:52vh;margin:0 auto 8px;border-radius:var(--r-sm);object-fit:contain}
 .pick-file{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 14px;border:var(--bw) dashed var(--ink);border-radius:var(--r);background:var(--paper2);text-align:center;cursor:pointer}
 .pick-file:hover,.pick-file:focus-within{background:var(--yellow-soft)}.pick-file input{position:absolute;width:1px;height:1px;opacity:0}.pick-file .ic{width:28px;height:28px}.pick-file small{color:var(--muted)}
 .reveal{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}.reveal .field{width:100%}
@@ -139,3 +145,6 @@ textarea.prompt{min-height:96px;font:14px/1.6 var(--font)}
   .key,.proxy{flex-wrap:wrap;gap:10px}.l-use{width:auto}.kv>div{grid-template-columns:72px minmax(0,1fr)}.t th,.t td{padding:9px 10px}
 }
 @keyframes up{from{opacity:0;transform:translateY(40px)}}
+
+/* Recent requests */
+#statRecentNotice{margin:0 0 10px}#statRecent .recent-error{max-width:320px;overflow-wrap:anywhere;margin-top:3px}

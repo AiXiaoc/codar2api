@@ -48,8 +48,8 @@ func TestAccountCatalogUsesSelectedProxyAndCredentials(t *testing.T) {
 	for _, tc := range []struct{ uid, proxy string }{{"a", "first"}, {"b", "second"}, {"a", "first"}} {
 		status, result := accountCatalogResult(t, h, tc.uid)
 		models := arr(result["models"])
-		if status != 200 || result["uid"] != tc.uid || len(models) != 2 || obj(models[0])["id"] != "auto" ||
-			obj(models[1])["id"] != tc.proxy+"-"+tc.uid || obj(models[1])["protocol"] != "openai" {
+		if status != 200 || result["uid"] != tc.uid || len(models) != 2+len(codarImageModels) || obj(models[0])["id"] != "auto" ||
+			obj(models[1])["id"] != tc.proxy+"-"+tc.uid || obj(models[1])["protocol"] != "openai" || obj(models[2])["type"] != "image" {
 			t.Fatal("wrong account catalog", status, result)
 		}
 		if len(seen) != 1 || <-seen != (observed{tc.proxy, tc.uid}) {
@@ -94,8 +94,8 @@ func TestAccountCatalogRotatesConfiguredProxies(t *testing.T) {
 		}
 	}
 	h.post(t, "/proxy-pool/manage", M{"action": "toggle", "id": 2, "enabled": false})
-	status, _ := accountCatalogResult(t, h, "a")
-	if status != http.StatusBadGateway || len(seen) != 0 {
+	status, result := accountCatalogResult(t, h, "a")
+	if status != http.StatusOK || text(result["warning"]) == "" || len(arr(result["models"])) != len(codarImageModels) || len(seen) != 0 {
 		t.Fatal("an unavailable rotating pool used a different exit")
 	}
 	h.callsMu.Lock()
@@ -126,8 +126,13 @@ func TestAccountCatalogProxyFailureNeverUsesGlobalCacheOrDirect(t *testing.T) {
 				proxy.Close()
 			}
 			status, result := accountCatalogResult(t, h, "a")
-			if status != http.StatusBadGateway || result["models"] != nil {
+			if status != http.StatusOK || text(result["warning"]) == "" || len(arr(result["models"])) != len(codarImageModels) {
 				t.Fatal("proxy failure returned cached models", status, result)
+			}
+			for _, v := range arr(result["models"]) {
+				if obj(v)["type"] != "image" {
+					t.Fatal("proxy failure should only leave the built-in image catalog", result)
+				}
 			}
 			h.callsMu.Lock()
 			defer h.callsMu.Unlock()

@@ -100,19 +100,19 @@ const models = list => (list || []).length ? '<div class="m-lv" style="margin-to
 const tokenLine = (input, output, cached, f) => { f = f || nf; return '<span>输入 <b>' + f(input || 0) + '</b></span><span>输出 <b>' + f(output || 0) + '</b></span><span>缓存命中 <b>' + f(cached || 0) + '</b>'
   + (input ? '（' + pctS((cached || 0) / input) + '）' : '') + '</span>'; };
 const kpi = (k, v, s, cls) => '<div class="kpi ' + (cls || '') + '"><div class="kpi-k">' + k + '</div><div class="kpi-v">' + v + '</div><div class="kpi-s">' + (s || '&nbsp;') + '</div></div>';
-function usageModels(list){
-  return '<div class="tbl"><table class="t"><thead><tr><th>模型</th><th class="num">调用</th><th>输入 · 输出 · 缓存命中</th><th class="num">花费</th></tr></thead><tbody>'
+function usageModels(list, account){
+  return '<div class="tbl"><table class="t"><thead><tr><th>模型</th><th class="num">调用</th><th>输入 · 输出 · 缓存命中</th>' + (account ? '' : '<th class="num">花费</th>') + '</tr></thead><tbody>'
     + ((list || []).map(m => '<tr><td class="mono">' + esc(m.model) + '</td><td class="num">' + nf(m.calls) + '</td><td><div class="toks">' + tokenLine(m.input_tokens, m.output_tokens, m.cached_tokens, fmtTok)
-      + '</div></td><td class="num">' + yuan(m.cost) + '</td></tr>').join('') || '<tr><td colspan="4" class="empty">这段时间没有调用</td></tr>') + '</tbody></table></div>';
+      + '</div></td>' + (account ? '' : '<td class="num">' + yuan(m.cost) + '</td>') + '</tr>').join('') || '<tr><td colspan="' + (account ? 3 : 4) + '" class="empty">这段时间没有调用</td></tr>') + '</tbody></table></div>';
 }
-function usageView(d, extra){
+function usageView(d, extra, account){
   const s = d.summary || {}, daily = d.daily || [], max = Math.max(1, ...daily.map(x => x.calls || 0)), every = daily.length > 16 ? Math.ceil(daily.length / 10) : 1;
   return '<div class="kpis sm usage3">' + kpi('调用', nf(s.calls || 0)) + kpi('输入 / 输出', fmtTok(s.input_tokens) + '<small>/</small> ' + fmtTok(s.output_tokens), '缓存命中 ' + fmtTok(s.cached_tokens) + '（' + pctS(s.cache_hit_rate) + '）', 'wide')
-    + kpi('花费', yuan(s.cost), (s.unpriced || []).length ? s.unpriced.length + ' 个模型无价格' : '') + '</div>'
+    + (account ? pointSpendingKPI(account) : kpi('花费', yuan(s.cost), (s.unpriced || []).length ? s.unpriced.length + ' 个模型无价格' : '')) + '</div>'
     + '<div class="chart" role="img" aria-label="每日调用次数">' + daily.map((x, i) => '<div class="col" title="' + esc(x.date) + '：' + nf(x.calls) + ' 次，输入 ' + fmtTok(x.input_tokens)
-      + '，输出 ' + fmtTok(x.output_tokens) + '，缓存 ' + fmtTok(x.cached_tokens) + (x.cost != null ? '，约 ' + yuan(x.cost) : '') + '"><i style="height:' + Math.max(x.calls ? 3 : 0, (x.calls || 0) / max * 100) + '%"></i>'
+      + '，输出 ' + fmtTok(x.output_tokens) + '，缓存 ' + fmtTok(x.cached_tokens) + (!account && x.cost != null ? '，约 ' + yuan(x.cost) : '') + '"><i style="height:' + Math.max(x.calls ? 3 : 0, (x.calls || 0) / max * 100) + '%"></i>'
       + '<span>' + (i % every === 0 || i === daily.length - 1 ? esc(String(x.date).slice(5)) : '') + '</span></div>').join('') + '</div>'
-    + (extra === undefined ? usageModels(d.models) : extra);
+    + (extra === undefined ? usageModels(d.models, account) : extra);
 }
 const TYPE_NAME = {agent: 'Agent', general: '通用'};
 function ledgerView(d){
@@ -142,11 +142,12 @@ function fetchLedger(uid, page, force){
   api('/accounts/ledger?uid=' + encodeURIComponent(uid) + '&page=' + page + '&page_size=20').then(d => { LCACHE[uid] = {page, data: d}; }, err => { LCACHE[uid] = {page, data: {ok: false, error: err.message}}; }).then(() => redrawTab('usage'));
 }
 function dUsage(a){
+  loadPointSpending();
   fetchUsage(a.uid); fetchLedger(a.uid, (LCACHE[a.uid] || {}).page || 1);
   const u = UCACHE[a.uid] || {}, l = LCACHE[a.uid] || {}, fail = d => '<div class="notice bad">查询失败：' + esc(d.error) + '</div>';
   return '<div class="row"><h3 style="margin:0">使用明细' + tip('Codar 官方统计，含这个账号在所有客户端的调用，免费模型也计入') + '</h3><span class="grow"></span>'
       + seg('data-udays', [[7, '7 天'], [14, '14 天'], [30, '30 天']], UDAYS) + '<button type="button" class="ibtn sm" data-ureload title="刷新" aria-label="刷新用量">' + ic('refresh') + '</button></div><div style="margin-top:12px">'
-    + (u.data ? (u.data.ok === false ? fail(u.data) : usageView(u.data)) : spinner()) + '</div>'
+    + (u.data ? (u.data.ok === false ? pointSpendingKPI(a) + fail(u.data) : usageView(u.data, undefined, a)) : pointSpendingKPI(a) + spinner()) + '</div>'
     + '<h3>额度明细' + tip('每笔积分收支来自上游账本；Agent 余额扣完接着扣通用余额，同一请求可能拆成两笔；免费模型不记账') + '</h3>'
     + (l.data ? (l.data.ok === false ? fail(l.data) : ledgerView(l.data)) : spinner());
 }
@@ -257,7 +258,7 @@ $('#drawer').addEventListener('click', async e => {
   if(e.target.closest('[data-rreload]')){ fetchRequests(SEL, (RCACHE[SEL] || {}).page || 1, true); return redrawTab('requests'); }
   const rp = e.target.closest('[data-rpage]'); if(rp){ fetchRequests(SEL, +rp.dataset.rpage); return redrawTab('requests'); }
   const ud = e.target.closest('[data-udays]'); if(ud){ UDAYS = +ud.dataset.udays; fetchUsage(SEL); return redrawTab('usage'); }
-  if(e.target.closest('[data-ureload]')){ fetchUsage(SEL, true); fetchLedger(SEL, (LCACHE[SEL] || {}).page || 1, true); return redrawTab('usage'); }
+  if(e.target.closest('[data-ureload]')){ loadPointSpending(true); fetchUsage(SEL, true); fetchLedger(SEL, (LCACHE[SEL] || {}).page || 1, true); return redrawTab('usage'); }
   const lp = e.target.closest('[data-lpage]'); if(lp){ fetchLedger(SEL, +lp.dataset.lpage); return redrawTab('usage'); }
   if(SEL) onAct(e, SEL);
 });

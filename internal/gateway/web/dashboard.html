@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Codar2API</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="stylesheet" href="/assets/app2.css">
 </head>
@@ -29,8 +30,8 @@
     <div class="filters"><div class="seg" id="accFilter" role="group" aria-label="状态筛选"></div>
       <button type="button" class="alert-chip" id="cdAll" hidden></button><button type="button" class="alert-chip bad" id="restrictionAll" hidden></button><button type="button" class="alert-chip bad" id="ipAll" hidden></button>
       <label class="field search" data-ic="search"><input id="accSearch" placeholder="搜索用户名 / ID / 备注" aria-label="搜索账号"></label></div>
-    <div class="tbl acc-tbl"><table class="t"><thead><tr><th class="pick"><label><input id="selectVisibleAccounts" type="checkbox" aria-label="选择当前筛选的全部账号"></label></th><th>账号</th><th>状态</th><th class="w-q">额度</th><th>令牌剩余</th><th>启用</th><th></th></tr></thead>
-      <tbody id="accBody"><tr class="empty-row"><td colspan="7" class="empty">加载中…</td></tr></tbody></table></div>
+    <div class="tbl acc-tbl"><table class="t"><thead><tr><th class="pick"><label><input id="selectVisibleAccounts" type="checkbox" aria-label="选择当前筛选的全部账号"></label></th><th>账号</th><th>状态</th><th class="w-q">额度</th><th class="point-spend">积分消耗<select id="spendRange" class="unit spend-select" aria-label="积分消耗时间"><option value="hour">1 小时</option><option value="today">今天</option><option value="day">24 小时</option><option value="week">一星期</option></select></th><th>令牌剩余</th><th>启用</th><th></th></tr></thead>
+      <tbody id="accBody"><tr class="empty-row"><td colspan="8" class="empty">加载中…</td></tr></tbody></table></div>
     <div class="batchbar" id="batchBar" role="group" aria-label="账号批量操作" hidden><b id="selectedCount" aria-live="polite"></b><button type="button" class="btn soft sm" id="selectAllAccounts"></button>
       <button type="button" class="btn soft sm" data-batch="enable">启用</button><button type="button" class="btn soft sm" data-batch="disable">禁用</button><button type="button" class="btn soft sm" data-batch="clear_restriction">解除受限</button><button type="button" class="btn soft sm" id="concurrencySelected">设置并发数</button><button type="button" class="btn soft sm" id="exportSelected">导出</button><button type="button" class="btn danger sm" data-batch="delete">删除</button>
       <button type="button" class="ibtn sm" id="clearAccountSelection" title="取消选择" aria-label="取消选择" data-ic="x"></button></div>
@@ -40,10 +41,10 @@
     <div class="page-head"><h1>统计</h1><div class="seg" id="statWin" role="group" aria-label="统计时间范围"><button type="button" data-h="1">1 小时</button><button type="button" data-h="24">24 小时</button><button type="button" data-h="168">7 天</button></div></div>
     <div class="kpis" id="statCards"></div>
     <section class="panel"><div class="panel-h"><h2>按模型</h2></div><div class="tbl"><table class="t"><thead><tr><th>模型</th><th class="num">请求</th><th class="num">成功率</th><th class="num">输入 / 输出</th><th class="num">缓存命中</th><th class="num">TPS</th><th class="num">首字</th><th class="num">估算花费</th></tr></thead><tbody id="statModels"></tbody></table></div></section>
-    <div class="grid2"><section class="panel tape-b"><div class="panel-h"><h2>按账号</h2></div><div class="tbl"><table class="t"><thead><tr><th>账号</th><th class="num">请求</th><th class="num">成功率</th><th class="num">缓存命中</th><th class="num">估算花费</th></tr></thead><tbody id="statAccounts"></tbody></table></div></section>
+    <div class="grid2"><section class="panel tape-b"><div class="panel-h"><h2>按账号</h2><div class="panel-act" id="statAccountsPager" role="group" aria-label="账号统计分页" hidden></div></div><div class="tbl"><table class="t"><thead><tr><th>账号</th><th class="num">请求</th><th class="num">成功率</th><th class="num">缓存命中</th><th class="num">估算花费</th></tr></thead><tbody id="statAccounts"></tbody></table></div></section>
       <section class="panel"><div class="panel-h"><h2>上游用量<span class="tip" tabindex="0" data-tip="Codar 官方统计，含这些账号在所有客户端的调用，不只经本网关；按北京时间分日" data-ic="info"></span></h2>
         <div class="panel-act"><div class="seg sm" id="upWin" role="group" aria-label="上游用量时间范围"><button type="button" data-updays="7">7 天</button><button type="button" data-updays="14">14 天</button><button type="button" data-updays="30">30 天</button></div><button type="button" class="ibtn sm" id="upReload" title="刷新" aria-label="刷新上游用量" data-ic="refresh"></button></div></div><div id="upBody"></div></section></div>
-    <section class="panel tape-b"><div class="panel-h"><h2>最近请求</h2></div><div class="tbl"><table class="t"><thead><tr><th>时间</th><th>模型</th><th>接口</th><th>账号</th><th>结果</th><th class="num">输入 / 缓存 / 输出</th><th class="num">首字</th><th class="num">耗时</th><th class="num">花费</th></tr></thead><tbody id="statRecent"></tbody></table></div></section>
+    <section class="panel tape-b"><div class="panel-h"><h2>最近请求</h2><div class="seg sm" id="statRecentMode" role="group" aria-label="最近请求类型"><button type="button" data-errors="0" aria-pressed="true">全部请求</button><button type="button" data-errors="1" aria-pressed="false">错误请求</button></div></div><p id="statRecentNotice" class="muted small" role="status" aria-live="polite"></p><div class="tbl"><table class="t"><thead><tr><th>时间</th><th>模型</th><th>接口</th><th>账号</th><th>结果</th><th class="num">输入 / 缓存 / 输出</th><th class="num">首字</th><th class="num">耗时</th><th class="num">花费</th></tr></thead><tbody id="statRecent" aria-busy="false"></tbody></table></div><div class="pager"><span id="statRecentPage" class="muted small" aria-live="polite"></span><button type="button" class="btn ghost sm" id="statRecentPrev" aria-label="最近请求上一页" disabled>上一页</button><button type="button" class="btn ghost sm" id="statRecentNext" aria-label="最近请求下一页" disabled>下一页</button></div></section>
   </div>
 
   <div data-page="models" hidden>
@@ -147,7 +148,11 @@
   <div class="modal-h"><h2 id="callTitle">调用测试</h2><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div>
   <form class="stack" id="callForm"><label class="lbl">模型<span class="field"><select id="callModel" aria-label="模型"></select></span></label>
     <label class="lbl">提示词<textarea id="callPrompt" class="in prompt" maxlength="8000" aria-label="提示词"></textarea></label>
-    <div class="row"><span class="muted small">Ctrl + Enter 发送 · 最多输出 1024 token，经该账号的出口发出</span><span class="grow"></span><button type="submit" class="btn" id="callGo" data-ic="play">发送</button></div></form>
+    <div class="call-image-options" id="callImageOptions" hidden>
+      <label class="lbl">宽高比或尺寸<input id="callSize" class="in" value="16:9" maxlength="32" placeholder="16:9"></label>
+      <label class="lbl">分辨率<span class="field"><select id="callResolution"><option>1K</option><option>2K</option><option>4K</option></select></span></label>
+    </div>
+    <div class="row"><span class="muted small" id="callHint">Ctrl + Enter 发送 · 最多输出 1024 token，经该账号的出口发出</span><span class="grow"></span><button type="submit" class="btn" id="callGo" data-ic="play"><span id="callGoText">发送</span></button></div></form>
   <div id="callOut"></div></div></div>
 <div class="modal-back" id="requestDetailModal" hidden><div class="modal request-detail-modal" role="dialog" aria-modal="true" aria-labelledby="requestDetailTitle">
   <div class="modal-h"><h2 id="requestDetailTitle">请求详细记录</h2><span class="grow"></span><button type="button" class="btn ghost sm" id="requestDetailExport" disabled data-ic="download">导出 JSON</button><button type="button" class="ibtn" data-close-modal aria-label="关闭" data-ic="x"></button></div>
@@ -155,6 +160,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/assets/ui.js"></script>
 <script src="/assets/accounts.js"></script>
+<script src="/assets/point-spend.js"></script>
 <script src="/assets/drawer.js"></script>
 <script src="/assets/concurrency.js"></script>
 <script src="/assets/add.js"></script>
@@ -162,6 +168,7 @@
 <script src="/assets/tools.js"></script>
 <script src="/assets/detail-diff.js"></script>
 <script src="/assets/about.js"></script>
+<script src="/assets/recent-requests.js"></script>
 <script src="/assets/pages.js"></script>
 </body>
 </html>

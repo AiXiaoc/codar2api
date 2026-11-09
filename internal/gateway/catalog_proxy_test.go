@@ -42,7 +42,7 @@ func TestGlobalCatalogProxySelectionCacheAndPersistence(t *testing.T) {
 	assertModel := func(want string, force bool) {
 		t.Helper()
 		status, result := globalCatalogResult(t, h, force)
-		if status != 200 || len(arr(result["models"])) != 1 || obj(arr(result["models"])[0])["id"] != want {
+		if status != 200 || len(arr(result["models"])) != 1+len(codarImageModels) || obj(arr(result["models"])[0])["id"] != want {
 			t.Fatal("wrong catalog", status, result)
 		}
 	}
@@ -121,22 +121,29 @@ func TestGlobalCatalogProxyAddressChangeAndUnavailableExits(t *testing.T) {
 	if status != 200 || text(result["warning"]) == "" || obj(arr(result["models"])[0])["id"] != "new" {
 		t.Fatal("refresh failure should explicitly warn when returning this exit's cache", status, result)
 	}
-	h.post(t, "/proxy-pool/manage", M{"action": "toggle", "id": 1, "enabled": false})
-	status, _ = globalCatalogResult(t, h, false)
-	if status != 502 {
-		t.Fatal("disabled proxy reused cached data")
+	assertImageOnly := func() {
+		t.Helper()
+		status, result := globalCatalogResult(t, h, false)
+		models := arr(result["models"])
+		if status != 200 || text(result["warning"]) == "" || num(result["at"]) != 0 || len(models) != len(codarImageModels) {
+			t.Fatal("catalog should return only built-in image models and report the exit error", status, result)
+		}
+		for _, model := range models {
+			if obj(model)["type"] != "image" {
+				t.Fatal("unavailable proxy reused a chat catalog", model)
+			}
+		}
 	}
+	h.post(t, "/proxy-pool/manage", M{"action": "toggle", "id": 1, "enabled": false})
+	assertImageOnly()
 	h.post(t, "/proxy-pool/manage", M{"action": "delete", "id": 1})
-	status, _ = globalCatalogResult(t, h, false)
-	if status != 502 || num(h.app.proxies.View(true)["catalog_proxy_id"]) != 1 {
+	assertImageOnly()
+	if num(h.app.proxies.View(true)["catalog_proxy_id"]) != 1 {
 		t.Fatal("deleted proxy silently changed to direct")
 	}
 	h.post(t, "/proxy-pool/manage", M{"action": "create", "name": "dead", "url": "http://127.0.0.1:1"})
 	h.post(t, "/catalog/proxy", M{"proxy_id": 2})
-	status, result = globalCatalogResult(t, h, false)
-	if status != 502 || len(arr(result["models"])) != 0 {
-		t.Fatal("a different proxy's cache hid the connection failure", status, result)
-	}
+	assertImageOnly()
 	h.callsMu.Lock()
 	defer h.callsMu.Unlock()
 	if len(h.calls) != 0 {

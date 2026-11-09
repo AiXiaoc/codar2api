@@ -149,12 +149,18 @@ type UsageLog struct {
 	mu                sync.Mutex
 	path              string
 	rows, pending     []M
+	requestErrors     *requestErrorLog
 	lastCompact       time.Time
 	lastDetailCleanup time.Time
 }
 
 func NewUsageLog(dir string) (*UsageLog, error) {
 	u := &UsageLog{path: filepath.Join(dir, "usage.jsonl"), rows: []M{}, pending: []M{}, lastCompact: time.Now(), lastDetailCleanup: time.Now()}
+	requestErrors, err := newRequestErrorLog(dir)
+	if err != nil {
+		return nil, err
+	}
+	u.requestErrors = requestErrors
 	if err := u.pruneRequestDetails(); err != nil {
 		log.Printf("request detail cleanup failed: %v", err)
 	}
@@ -173,16 +179,19 @@ func NewUsageLog(dir string) (*UsageLog, error) {
 		var row M
 		if json.Unmarshal(scan.Bytes(), &row) == nil && num(row["ts"]) >= cutoff {
 			u.rows = append(u.rows, row)
+			u.requestErrors.record(row)
 		}
 	}
 	if e = scan.Err(); e != nil {
 		return nil, e
 	}
+	u.requestErrors.sortRows()
 	return u, nil
 }
 func (u *UsageLog) Record(row M) {
 	row = clone(row)
 	row["ts"] = now()
+	row["request_log_id"] = random(16)
 	row["tps"] = nil
 	if yes(row["ok"]) && num(row["completion"]) > 0 {
 		gen := num(row["ms"])
@@ -200,10 +209,18 @@ func (u *UsageLog) Record(row M) {
 	defer u.mu.Unlock()
 	u.rows = append(u.rows, row)
 	u.pending = append(u.pending, row)
+	if u.requestErrors != nil {
+		u.requestErrors.record(row)
+	}
 }
 func (u *UsageLog) Flush() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if u.requestErrors != nil {
+		if err := u.requestErrors.flush(); err != nil {
+			return err
+		}
+	}
 	if time.Since(u.lastDetailCleanup) >= time.Hour {
 		if err := u.pruneRequestDetails(); err != nil {
 			log.Printf("request detail cleanup failed: %v", err)

@@ -35,6 +35,9 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			return M{"settings": a.store.Settings(), "schema": schema, "scheduling_options": schedulingOptions, "request_debug_options": requestDebugOptions, "request_blocklist_count": a.requestBlocks.Count()}, 200, nil
 		case "/accounts/concurrency":
 			return M{"accounts": a.store.Concurrency()}, 200, nil
+		case "/accounts/spending":
+			d, e := a.pointSpending(ctx, q.Get("uid"), force)
+			return d, 400, e
 		case "/keys":
 			return M{"keys": a.auth.Keys()}, 200, nil
 		case "/proxy-pool":
@@ -46,18 +49,18 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			}
 			out, e := a.requestJSON(ctx, "GET", a.cfg.APIBase+"/v1/codar/models", account, nil, nil)
 			if e != nil {
-				return nil, http.StatusBadGateway, e
+				return M{"uid": account["uid"], "models": imageModelCatalog(nil), "warning": safeMessage(e.Error())}, 200, nil
 			}
-			return M{"uid": account["uid"], "models": catalogModels(out), "at": now()}, 200, nil
+			return M{"uid": account["uid"], "models": imageModelCatalog(catalogModels(out)), "at": now()}, 200, nil
 		case "/catalog":
 			models, e := a.catalog(ctx, force)
-			if e != nil && len(models) == 0 {
-				return nil, 502, e
-			}
 			a.store.mu.RLock()
 			at := a.store.catalogAt
 			a.store.mu.RUnlock()
-			out := M{"models": models, "at": at}
+			if e != nil && len(models) == 0 {
+				at = 0
+			}
+			out := M{"models": imageModelCatalog(models), "at": at}
 			if e != nil {
 				out["warning"] = safeMessage(e.Error())
 			}
@@ -69,6 +72,19 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			}
 			hours = max(0.1, min(hours, 168))
 			d := a.usage.Stats(now()-hours*3600, a.cost)
+			d["hours"] = hours
+			return d, 200, nil
+		case "/stats/recent":
+			hours := num(q.Get("hours"))
+			if hours <= 0 {
+				hours = 24
+			}
+			hours = max(0.1, min(hours, 168))
+			size := int(num(q.Get("page_size")))
+			if size <= 0 {
+				size = 30
+			}
+			d := a.usage.RecentRequests(now()-hours*3600, q.Get("errors_only") == "1", int(num(q.Get("page"))), size, a.cost)
 			d["hours"] = hours
 			return d, 200, nil
 		case "/stats/request-detail":

@@ -46,9 +46,9 @@ function stateCell(a){
     : chip('ok', '<i class="pt"></i>正常', a.last_error ? '最近错误：' + a.last_error : '');
   if(a.restricted) nt('<button type="button" class="link" data-act="unrestrict">解除受限</button>');
   if(exitBlocked(a)) nt('<span class="bad-t" title="' + esc(a.proxy.blocked_reason || '') + '">IP 封控 · ' + esc(exitName(a)) + '</span><button type="button" class="link" data-act="' + (a.proxy.mode === 'round_robin' ? 'proxy-pool' : 'unblock') + '">' + (a.proxy.mode === 'round_robin' ? '管理代理池' : '解除') + '</button>');
-  if(cooling(a)) nt('<span class="warn-t">' + (a.cooldown_kind === 'balance' ? '余额冷却 · ' + (hasFree ? '仅免费模型' : '已暂停调度') : esc(a.cooldown_reason || '冷却中')) + '</span><span class="cd" data-cd="' + a.cooldown_until + '">还有 '
+  if(cooling(a)) nt('<span class="warn-t">' + (a.cooldown_kind === 'balance' ? '余额冷却 · ' + (hasFree ? '对话仅免费模型' : '暂停收费对话') : esc(a.cooldown_reason || '冷却中')) + '</span><span class="cd" data-cd="' + a.cooldown_until + '">还有 '
     + dur2s(a.cooldown_until - NOW()) + '</span><button type="button" class="link" data-act="reset">立即恢复</button>');
-  else if(a.paid_block) nt('<span class="' + (hasFree ? 'muted' : 'warn-t') + '" title="' + (hasFree ? '收费模型暂停派发，活动有效期内的免费模型照常' : '没有活动有效期内的免费模型，已停止模型调度') + '；签到、兑换或充值后下次刷新余额即恢复">' + (hasFree ? '仅免费模型 · ' + esc(a.paid_block) : '余额不足，已暂停调度') + '</span>');
+  else if(a.paid_block) nt('<span class="' + (hasFree ? 'muted' : 'warn-t') + '" title="生图不受对话余额限制；签到、兑换或充值后下次刷新余额即恢复收费对话">' + (hasFree ? '对话仅免费模型 · ' + esc(a.paid_block) : '余额不足，暂停收费对话') + '</span>');
   const token = a.token_invalid ? '令牌失效' : expired ? '令牌过期' : a.reason === '没有令牌' ? '没有令牌' : '';
   if(token) nt('<span class="bad-t">' + token + '</span><button type="button" class="link" data-act="relogin">重新导入</button>');
   if(a.enabled && a.ready && s.at && !s.signed) nt('<span class="warn-t">今天还没签到</span>');
@@ -60,15 +60,16 @@ function expCell(a){
   return '<b' + (a.token_exp - NOW() < 86400 ? ' class="warn-t"' : '') + '>' + dur(a.token_exp - NOW()) + '</b><div class="muted">' + fmtS(a.token_exp) + '</div>';
 }
 const accountSwitch = a => sw(a.enabled, '启用账号 ' + (a.username || a.uid), 'data-act="toggle" title="' + (a.enabled ? '已启用：点击关闭后停止自动调度和后台任务，仍可手动调用和测试' : '已关闭：仍可手动调用和测试，点击启用自动调度') + '"');
-const concurrencyText = a => (a.current_concurrency || 0) + ' / ' + (a.max_concurrency || '∞');
-const concurrencyCell = a => '<span class="mono' + (a.max_concurrency > 0 && a.current_concurrency >= a.max_concurrency ? ' warn-t' : '') + '" data-concurrency-uid="' + esc(a.uid) + '" title="当前并发 / 最大并发，∞ 表示无上限">' + concurrencyText(a) + '</span>';
+const concurrencyText = a => (a.current_concurrency || 0) + '/' + (a.max_concurrency || '∞');
+const concurrencyClass = a => a.current_concurrency > 0 ? (a.max_concurrency > 0 && a.current_concurrency >= a.max_concurrency ? 'concurrency-full' : 'concurrency-active') : '';
+const concurrencyCell = a => '<span class="mono ' + concurrencyClass(a) + '" data-concurrency-uid="' + esc(a.uid) + '" title="当前并发 / 最大并发，∞ 表示无上限">' + concurrencyText(a) + '</span>';
 function row(a){
   const px = a.proxy && a.proxy.mode !== 'direct' ? '<div class="px' + (a.proxy.available === false ? ' bad-t' : '') + '">' + ic('globe') + esc(proxyName(a)) + '</div>' : '';
   const picked = SELECTED_ACCOUNTS.has(a.uid), cls = [SEL === a.uid && 'sel', picked && 'checked', !a.enabled && 'is-off'].filter(Boolean).join(' ');
   return '<tr class="' + cls + '" data-uid="' + esc(a.uid) + '"><td class="pick"><label><input type="checkbox" data-select-account="' + esc(a.uid) + '" aria-label="选择账号 ' + esc(a.username || a.uid) + '"'
     + (picked ? ' checked' : '') + (BATCH_BUSY ? ' disabled' : '') + '></label></td>'
     + '<td><button type="button" class="nm"><b>' + esc(a.username || a.uid) + '</b>' + (a.note ? '<span class="note" title="' + esc(a.note) + '">' + esc(a.note) + '</span>' : '') + '</button>' + px + '<div class="muted small">并发 ' + concurrencyCell(a) + '</div></td>'
-    + '<td>' + stateCell(a) + '</td><td class="w-q">' + quotaCell(a) + '</td><td class="exp">' + expCell(a) + '</td><td>' + accountSwitch(a) + '</td>'
+    + '<td>' + stateCell(a) + '</td><td class="w-q">' + quotaCell(a) + '</td><td>' + pointSpendingCell(a) + '</td><td class="exp">' + expCell(a) + '</td><td>' + accountSwitch(a) + '</td>'
     + '<td class="row-act"><button type="button" class="ibtn sm" data-act="call" title="' + (a.restricted ? '请先解除受限' : '调用：选模型、写提示词测试') + '" aria-label="调用"' + (a.restricted ? ' disabled' : '') + '>' + ic('chat') + '</button>'
     + '<button type="button" class="ibtn sm" data-act="test" title="' + (a.restricted ? '请先解除受限' : '测试') + '" aria-label="测试"' + (a.restricted ? ' disabled' : '') + '>' + ic('play') + '</button>'
     + '<button type="button" class="ibtn sm" data-act="refresh" title="刷新" aria-label="刷新">' + ic('refresh') + '</button><span class="chev">' + ic('right') + '</span></td></tr>';
@@ -76,7 +77,7 @@ function row(a){
 const isOk = a => a.enabled && a.ready;
 function visible(){
   const kw = KW.toLowerCase();
-  const pass = {all: () => true, ok: a => !a.restricted, restricted: a => a.restricted, ip: exitBlocked, off: a => !a.enabled}[FILTER] || (() => true);
+  const pass = {all: () => true, on: a => a.enabled, ok: a => !a.restricted, restricted: a => a.restricted, ip: exitBlocked, off: a => !a.enabled}[FILTER] || (() => true);
   return ROWS.filter(a => (!kw || [a.username, a.uid, a.note, a.display_name].join(' ').toLowerCase().includes(kw)) && pass(a));
 }
 function drawSelection(){
@@ -132,13 +133,13 @@ function draw(){
   const all = ROWS.length, ok = ROWS.filter(isOk).length, on = ROWS.filter(a => a.enabled), restricted = ROWS.filter(a => a.restricted).length, ncd = ROWS.filter(cooling).length;
   const blocked = ROWS.filter(exitBlocked).length;
   if(FILTER === 'ip' && !blocked) FILTER = 'all';
-  $('#accFilter').innerHTML = [['all', '全部', all], ['ok', '正常', all - restricted], ['restricted', '账号受限', restricted], blocked && ['ip', 'IP 封控', blocked], ['off', '已关闭', all - on.length]].filter(Boolean).map(f =>
+  $('#accFilter').innerHTML = [['all', '全部', all], ['on', '已启用', on.length], ['ok', '正常', all - restricted], ['restricted', '账号受限', restricted], blocked && ['ip', 'IP 封控', blocked], ['off', '已关闭', all - on.length]].filter(Boolean).map(f =>
     '<button type="button" data-f="' + f[0] + '" aria-pressed="' + (FILTER === f[0]) + '">' + f[1] + '<em>' + f[2] + '</em></button>').join('');
   drawPool(all, ok, on);
   $('#cdAll').hidden = !ncd; $('#cdAll').innerHTML = ic('clock') + ncd + ' 个冷却中 · 全部恢复';
   $('#restrictionAll').hidden = !restricted; $('#restrictionAll').innerHTML = ic('shield') + restricted + ' 个账号受限 · 全部解除';
   $('#ipAll').hidden = !blocked; $('#ipAll').innerHTML = ic('globe') + blocked + ' 个账号的出口 IP 被封控 · 去代理池';
-  $('#accBody').innerHTML = visible().map(row).join('') || '<tr class="empty-row"><td colspan="7" class="empty">' + (all ? '没有匹配的账号' : '还没有账号，点「添加账号」开始') + '</td></tr>';
+  $('#accBody').innerHTML = visible().map(row).join('') || '<tr class="empty-row"><td colspan="8" class="empty">' + (all ? '没有匹配的账号' : '还没有账号，点「添加账号」开始') + '</td></tr>';
   drawSelection();
 }
 async function load(){
@@ -148,6 +149,7 @@ async function load(){
   SELECTED_ACCOUNTS.forEach(uid => { if(!existing.has(uid)) SELECTED_ACCOUNTS.delete(uid); });
   SET_CUR = d.settings || {};
   draw();
+  loadPointSpending();
   if(SEL){ const a = ROWS.find(x => x.uid === SEL); a ? drawDrawer(a) : closeDrawer(); }
 }
 let CONCURRENCY_LOADING = false;
@@ -161,7 +163,9 @@ async function loadConcurrency(){
     document.querySelectorAll('[data-concurrency-uid]').forEach(el => {
       const a = live.get(el.dataset.concurrencyUid); if(!a) return;
       el.textContent = concurrencyText(a);
-      el.classList.toggle('warn-t', a.max_concurrency > 0 && a.current_concurrency >= a.max_concurrency);
+      const state = concurrencyClass(a);
+      el.classList.toggle('concurrency-active', state === 'concurrency-active');
+      el.classList.toggle('concurrency-full', state === 'concurrency-full');
     });
   } finally { CONCURRENCY_LOADING = false; }
 }

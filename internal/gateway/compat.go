@@ -1,12 +1,26 @@
 package gateway
 
-import "strings"
+import (
+	"math/rand/v2"
+	"strings"
+)
 
 const (
-	codarIdentity = "You are an AI agent running on the Codar runtime."
-	legacyFill    = ".\u200b"
-	identityFill  = legacyFill + "X"
+	codarIdentity   = "You are an AI agent running on the Codar runtime."
+	harnessIdentity = "You are an AI agent powered by DeepSeek Harness."
+	neutralIdentity = "You are an AI coding agent."
+	legacyFill      = ".\u200b"
+	legacyFillX     = legacyFill + "X"
 )
+
+func randomIdentityFill() string {
+	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	buf := make([]byte, 8+rand.IntN(9))
+	for i := range buf {
+		buf[i] = letters[rand.IntN(len(letters))]
+	}
+	return string(buf)
+}
 
 type identityPart struct {
 	value string
@@ -44,8 +58,8 @@ func identityParts(value any, assign func(string)) []identityPart {
 	return parts
 }
 
-// transformIdentity adds the identity line and optional fill at the start of
-// a prompt, preserving existing text and text block metadata.
+// transformIdentity replaces a leading Harness identity and adds the Codar
+// identity line and optional fill, preserving text block metadata.
 func transformIdentity(container M, key string, rewrite, fill bool) bool {
 	value, ok := container[key]
 	if !ok {
@@ -55,17 +69,21 @@ func transformIdentity(container M, key string, rewrite, fill bool) bool {
 	if len(parts) == 0 {
 		return false
 	}
+	nonempty := make([]bool, len(parts))
+	for i, part := range parts {
+		nonempty[i] = part.value != ""
+	}
 	var start strings.Builder
 	for _, part := range parts {
 		start.WriteString(part.value)
-		if start.Len() >= len(identityFill)+len(codarIdentity)+1 {
+		if start.Len() >= len(legacyFillX)+len(codarIdentity)+1+len(harnessIdentity) {
 			break
 		}
 	}
 	prefix := start.String()
 	offset := 0
-	if strings.HasPrefix(prefix, identityFill) {
-		offset = len(identityFill)
+	if strings.HasPrefix(prefix, legacyFillX) {
+		offset = len(legacyFillX)
 	} else if strings.HasPrefix(prefix, legacyFill) {
 		offset = len(legacyFill)
 	}
@@ -79,21 +97,68 @@ func transformIdentity(container M, key string, rewrite, fill bool) bool {
 		}
 	}
 	changed := false
+	identityOffset := offset
+	if strings.HasPrefix(prefix[offset:], codarIdentity+"\n") {
+		identityOffset += len(codarIdentity) + 1
+	}
+	if rewrite && strings.HasPrefix(prefix[identityOffset:], harnessIdentity) {
+		position, inserted := 0, false
+		end := identityOffset + len(harnessIdentity)
+		for i := range parts {
+			original := parts[i].value
+			partEnd := position + len(original)
+			if partEnd > identityOffset && position < end {
+				from, to := max(0, identityOffset-position), min(len(original), end-position)
+				replacement := ""
+				if !inserted {
+					replacement, inserted = neutralIdentity, true
+				}
+				parts[i].value = original[:from] + replacement + original[to:]
+			}
+			position = partEnd
+			if position >= end {
+				break
+			}
+		}
+		changed = true
+	}
 	if rewrite && !strings.HasPrefix(prefix[offset:], codarIdentity+"\n") {
 		insert(offset, codarIdentity+"\n")
 		changed = true
 	}
 	if fill {
-		switch offset {
-		case 0:
-			insert(0, identityFill)
-			changed = true
-		case len(legacyFill):
-			insert(offset, "X")
-			changed = true
+		// Replace any old fill, including when it spans text blocks.
+		remaining := offset
+		for i := range parts {
+			n := min(remaining, len(parts[i].value))
+			parts[i].value = parts[i].value[n:]
+			remaining -= n
+			if remaining == 0 {
+				break
+			}
 		}
+		insert(0, randomIdentityFill())
+		changed = true
 	}
 	if changed {
+		// Replacing an identity spanning blocks may empty a text block. Move
+		// trailing characters forward without changing the concatenated prompt.
+		for i := range parts {
+			if !nonempty[i] || parts[i].value != "" {
+				continue
+			}
+			for donor := i - 1; donor >= 0; donor-- {
+				if len([]rune(parts[donor].value)) <= 1 {
+					continue
+				}
+				for j := donor; j < i; j++ {
+					runes := []rune(parts[j].value)
+					parts[j].value = string(runes[:len(runes)-1])
+					parts[j+1].value = string(runes[len(runes)-1]) + parts[j+1].value
+				}
+				break
+			}
+		}
 		for _, part := range parts {
 			part.set(part.value)
 		}

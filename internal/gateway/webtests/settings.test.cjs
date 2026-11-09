@@ -30,7 +30,7 @@ function harness(){
   };
   const initial = {
     use_codar_ua:true, auto_passthrough:true, dsh_identity_rewrite:true,
-    identity_first_line_fill:false, detailed_debug:false, request_debug_scope:'errors', allow_remote_management:true,
+    identity_first_line_fill:false, historical_tool_as_user:false, detailed_debug:false, request_debug_scope:'errors', allow_remote_management:true,
     auto_sign:true, auto_claim:true, auto_renew_token:true, ip_block:true, restricted_request_block:false, allow_general_balance:true,
     codar_ua:'saved agent', max_attempts:3, scheduling_strategy:'round_robin', proxy_connect_retry:false, proxy_connect_switch:false
   };
@@ -64,7 +64,7 @@ function harness(){
 
 test('every settings switch saves only its own value without submitting text drafts', async () => {
   for(const key of ['use_codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill',
-    'detailed_debug', 'allow_remote_management', 'auto_sign', 'auto_claim', 'auto_renew_token', 'ip_block', 'restricted_request_block', 'allow_general_balance', 'proxy_connect_retry', 'proxy_connect_switch']){
+    'historical_tool_as_user', 'detailed_debug', 'allow_remote_management', 'auto_sign', 'auto_claim', 'auto_renew_token', 'ip_block', 'restricted_request_block', 'allow_general_balance', 'proxy_connect_retry', 'proxy_connect_switch']){
     const h = harness(), control = h.control(key), before = control.getAttribute('aria-checked') === 'true';
     h.control('codar_ua').value = 'unsaved agent';
     h.control('max_attempts').value = '5';

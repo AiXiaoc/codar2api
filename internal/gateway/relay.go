@@ -105,6 +105,10 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 		apiError(w, 400, "请指定 model")
 		return
 	}
+	if isCodarImageModel(model) {
+		apiError(w, 400, "该模型用于生成图片，请调用 POST /v1/images/generations")
+		return
+	}
 	settings := a.store.Settings()
 	passthrough := yes(settings["auto_passthrough"])
 	blockRestrictedRequest := yes(settings["restricted_request_block"])
@@ -112,7 +116,9 @@ func (a *App) relay(w http.ResponseWriter, r *http.Request, p, key, explicit M) 
 	if blockRestrictedRequest {
 		requestID = requestFingerprint(r.URL.Path, p)
 	}
+	toolHistoryChanged := transformHistoricalToolReplies(r.URL.Path, p, yes(settings["historical_tool_as_user"]))
 	bodyChanged := transformIdentityPrompts(r.URL.Path, p, yes(settings["dsh_identity_rewrite"]), yes(settings["identity_first_line_fill"]))
+	bodyChanged = bodyChanged || toolHistoryChanged
 	isStream := yes(p["stream"])
 	if !passthrough && r.URL.Path == "/v1/chat/completions" && isStream {
 		opts := obj(p["stream_options"])
@@ -554,6 +560,9 @@ func (a *App) pipe(w http.ResponseWriter, r *http.Request, account M, resp *http
 // testAccount sends one non-streaming chat request from the panel. The quick
 // test sends "Hi" with a 16-token cap; the call dialog passes its own prompt.
 func (a *App) testAccount(ctx context.Context, account M, model, prompt string, maxTokens int) M {
+	if isCodarImageModel(model) {
+		return M{"ok": false, "error": "生图模型请使用 /v1/images/generations", "model": model}
+	}
 	if prompt == "" {
 		prompt = "Hi"
 	}

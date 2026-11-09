@@ -123,6 +123,7 @@ func (a *App) requestJSON(ctx context.Context, method, endpoint string, account 
 func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method, endpoint string, account M, pinned *Route, body any) (M, error) {
 	u, e := url.Parse(endpoint)
 	chat := e == nil && isChat(u.Path)
+	research := e == nil && u.Path == codarResearchPath
 	if chat && account != nil {
 		if current := a.store.Get(text(account["uid"])); current != nil && yes(current["restricted"]) {
 			return nil, &UpstreamError{Status: 403, Message: "账号受限，请手动解除受限标记"}
@@ -151,6 +152,10 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "node")
+	if research {
+		req.Header.Set("X-Request-ID", random(16))
+		req.Header.Set("User-Agent", "Go-http-client/2.0")
+	}
 	if chat || u != nil && u.Path == "/v1/codar/models" {
 		req.Header.Set("User-Agent", modelUserAgent(a.store.Settings()))
 	}
@@ -160,12 +165,12 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 	detail := detailFor(ctx)
 	observe := func(req *http.Request, route Route, _ int) func(*http.Response, error) {
 		var attempt *detailAttempt
-		if detail != nil && chat {
+		if detail != nil && (chat || research) {
 			attempt = detail.startAttempt(req, requestBytes)
 			attempt.proxy = route
 		}
 		return func(resp *http.Response, err error) {
-			if detail != nil && chat {
+			if detail != nil && (chat || research) {
 				if err != nil {
 					detail.errorAttempt(attempt, err)
 				} else {
@@ -184,7 +189,7 @@ func (a *App) requestJSONWithin(ctx context.Context, limit time.Duration, method
 	}
 	defer resp.Body.Close()
 	raw, e := io.ReadAll(io.LimitReader(resp.Body, 4<<20+1))
-	if detail != nil && chat && e == nil && len(raw) > 4<<20 {
+	if detail != nil && (chat || research) && e == nil && len(raw) > 4<<20 {
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}
 	if e != nil {
@@ -578,6 +583,9 @@ func (a *App) price(model string) M {
 	return nil
 }
 func (a *App) cost(model string, prompt, cached, completion float64) any {
+	if isCodarImageModel(model) {
+		return nil
+	}
 	p := a.price(model)
 	if p == nil {
 		return nil
@@ -727,8 +735,19 @@ func (a *App) ledger(ctx context.Context, acc M, page, size int) (M, error) {
 	}
 	d := obj(out["data"])
 	rows := []any{}
-	for _, v := range arr(d["items"]) {
+	rawItems, valid := d["items"].([]any)
+	if !valid {
+		return nil, errors.New("积分账单缺少 items 列表")
+	}
+	total, valid := pointAmount(d["total"])
+	if !valid || total < 0 || total < float64(len(rawItems)) {
+		return nil, errors.New("积分账单缺少有效的总条数")
+	}
+	for _, v := range rawItems {
 		x := obj(v)
+		if _, valid := pointAmount(x["change"]); !valid {
+			return nil, errors.New("积分账单缺少有效的扣费金额")
+		}
 		r := M{"id": x["id"], "change": x["change"], "type": text(x["point_type"]), "note": text(x["note"]), "at": isoTime(x["created_at"]), "expire_at": isoTime(x["expire_at"])}
 		if m := ledgerNote.FindStringSubmatch(text(x["note"])); m != nil {
 			r["model"] = strings.TrimSpace(m[1])
@@ -738,7 +757,7 @@ func (a *App) ledger(ctx context.Context, acc M, page, size int) (M, error) {
 		}
 		rows = append(rows, r)
 	}
-	return M{"total": num(d["total"]), "page": page, "page_size": size, "items": rows}, nil
+	return M{"total": total, "page": page, "page_size": size, "items": rows}, nil
 }
 func ratio(a, b float64) any {
 	if b == 0 {

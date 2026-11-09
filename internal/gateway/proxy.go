@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -59,10 +60,16 @@ type ProxyPool struct {
 	checkURL     string
 	rotationNext int
 	rotationLast string
+	stats        *proxyRequestStats
 }
 
 func NewProxyPool(dir, checkURL string) (*ProxyPool, error) {
 	p := &ProxyPool{dir: dir, data: M{"next_id": 1, "proxies": []any{}, "accounts": M{}}, clients: map[string]*http.Client{}, checkURL: checkURL}
+	stats, err := newProxyRequestStats(dir)
+	if err != nil {
+		return nil, err
+	}
+	p.stats = stats
 	if e := loadOptional(filepath.Join(dir, "proxies.json"), &p.data); e != nil {
 		return nil, e
 	}
@@ -357,13 +364,16 @@ func (p *ProxyPool) View(admin bool) M {
 	for _, v := range arr(p.data["proxies"]) {
 		m := clone(obj(v))
 		delete(m, "url")
+		m["stats"] = p.stats.view(int(num(m["id"])))
 		if u, e := url.Parse(text(obj(v)["url"])); e == nil {
 			m["address"] = u.Scheme + "://" + u.Host
 			m["authenticated"] = u.User != nil
 		}
 		rows = append(rows, m)
 	}
-	return M{"ok": true, "supported": true, "proxies": rows, "direct": clone(obj(p.data["direct"])), "catalog_proxy_id": num(p.data["catalog_proxy_id"]), "error": ""}
+	direct := clone(obj(p.data["direct"]))
+	direct["stats"] = p.stats.view(0)
+	return M{"ok": true, "supported": true, "proxies": rows, "direct": direct, "catalog_proxy_id": num(p.data["catalog_proxy_id"]), "error": ""}
 }
 func (p *ProxyPool) Bind(uids []string, r Route) error {
 	p.mu.Lock()
@@ -619,6 +629,7 @@ func (p *ProxyPool) Do(req *http.Request, r Route) (*http.Response, error) {
 	ctx := httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
 	resp, e := c.Do(req.WithContext(ctx))
 	if e != nil {
+		p.stats.record(r.ID, false)
 		if req.Context().Err() != nil {
 			return nil, req.Context().Err()
 		}
@@ -630,6 +641,8 @@ func (p *ProxyPool) Do(req *http.Request, r Route) (*http.Response, error) {
 		}
 		return nil, errors.New("连接上游失败或超时")
 	}
+	success := resp.StatusCode >= 200 && resp.StatusCode < 300
+	resp.Body = &proxyStatsBody{ReadCloser: resp.Body, finish: func(readOK bool) { p.stats.record(r.ID, success && readOK) }}
 	return resp, nil
 }
 func (p *ProxyPool) Check(ctx context.Context, id int) (M, error) {
@@ -672,9 +685,16 @@ func (p *ProxyPool) Check(ctx context.Context, id int) (M, error) {
 	return result, nil
 }
 func (p *ProxyPool) Close() {
+	if err := p.Flush(); err != nil {
+		log.Printf("proxy statistics flush failed: %v", err)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, c := range p.clients {
 		c.CloseIdleConnections()
 	}
+}
+
+func (p *ProxyPool) Flush() error {
+	return p.stats.flush()
 }

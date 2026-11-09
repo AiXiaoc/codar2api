@@ -36,9 +36,15 @@ async function loadCatalog(force){
 }
 function drawCatalog(d){
   const free = freeNow();
-  $('#catAt').innerHTML = d.models.length + ' 个' + (d.at ? ' · ' + ago(d.at) + '更新' : '') + (d.warning ? ' · <span class="bad-t">刷新失败：' + esc(d.warning) + '</span>' : '');
+  $('#catAt').innerHTML = d.models.length + ' 个' + (d.at ? ' · ' + ago(d.at) + '更新' : '') + (d.warning ? ' · <span class="bad-t">对话目录刷新失败：' + esc(d.warning) + '</span>' : '');
   $('#catBody').innerHTML = d.models.map(m => {
     const p = m.pricing || {}, v = vendor(m.id), lv = m.reasoning_levels || [];
+    if(m.type === 'image') {
+      return '<article class="model"><div class="m-top"><span class="vdot" style="background:' + v[2] + '" title="' + esc(v[1]) + '"></span><div class="m-name"><b>' + esc(m.name || m.id) + '</b><span class="mono muted">' + esc(m.id) + '</span></div></div>'
+        + '<div class="m-caps">' + chip('ok sm', '生图') + chip('sm', '参考图') + '</div>'
+        + '<dl class="m-spec m-spec-image"><div><dt>接口</dt><dd class="mono">/v1/images/generations</dd></div><div><dt>分辨率</dt><dd class="m-resolution">1K / 2K / 4K</dd></div></dl>'
+        + '<div class="m-price"><em style="margin-left:0">图像工具 · 计费以上游为准</em></div></article>';
+    }
     const caps = ((m.input_modalities || []).includes('image') ? chip('ok sm', '视觉') : chip('sm', '文本')) + (m.tools ? chip('sm', '工具') : '') + (lv.length ? chip('think sm', '推理') : '');
     const proto = {openai_chat_completions: 'OpenAI Chat', anthropic_messages: 'Anthropic', openai: 'OpenAI'}[m.protocol] || m.protocol || '-';
     return '<article class="model"><div class="m-top"><span class="vdot" style="background:' + v[2] + '" title="' + esc(v[1]) + '"></span><div class="m-name"><b>' + esc(m.name || m.id) + '</b><span class="mono muted">' + esc(m.id) + '</span></div>'
@@ -78,9 +84,28 @@ try { STAT_H = +localStorage.getItem('codar-stat-hours') || 24; } catch(e) {}
 const n = v => v == null ? '-' : Number(v).toLocaleString('en-US');
 const round1 = v => v == null ? '-' : String(Math.round(v * 10) / 10);
 const rateCls = v => v == null ? '' : v >= 0.95 ? 'ok-t' : v >= 0.8 ? 'warn-t' : 'bad-t';
-const API_NAME = {'/v1/chat/completions': 'Chat', '/v1/messages': 'Messages', '/v1/responses': 'Responses'};
+const API_NAME = {'/v1/chat/completions': 'Chat', '/v1/messages': 'Messages', '/v1/responses': 'Responses', '/v1/images/generations': '生图'};
+let STATS_GENERATION = 0;
+let STAT_ACCOUNT_ROWS = [], STAT_ACCOUNT_PAGE = 1;
+const STAT_ACCOUNT_PAGE_SIZE = 10;
+function drawStatAccounts(){
+  const total = STAT_ACCOUNT_ROWS.length, pages = Math.max(1, Math.ceil(total / STAT_ACCOUNT_PAGE_SIZE));
+  STAT_ACCOUNT_PAGE = Math.max(1, Math.min(STAT_ACCOUNT_PAGE, pages));
+  const start = (STAT_ACCOUNT_PAGE - 1) * STAT_ACCOUNT_PAGE_SIZE;
+  $('#statAccounts').innerHTML = STAT_ACCOUNT_ROWS.slice(start, start + STAT_ACCOUNT_PAGE_SIZE).map(a => '<tr><td>' + esc(a.account) + '</td><td class="num">' + n(a.requests) + '</td><td class="num ' + rateCls(a.success_rate) + '">' + pctS(a.success_rate)
+    + '</td><td class="num">' + pctS(a.cache_hit_rate) + '</td><td class="num">' + yuan(a.price_cost) + '</td></tr>').join('') || '<tr><td colspan="5" class="empty">这段时间还没有请求</td></tr>';
+  const pager = $('#statAccountsPager');
+  pager.hidden = total === 0;
+  pager.innerHTML = '<span class="muted small">共 ' + total + ' 个账号</span>' + (pages > 1
+    ? '<button type="button" class="btn ghost sm" data-stat-account-page="' + (STAT_ACCOUNT_PAGE - 1) + '"' + (STAT_ACCOUNT_PAGE <= 1 ? ' disabled' : '') + '>上一页</button>'
+      + '<span class="muted small" aria-live="polite">' + STAT_ACCOUNT_PAGE + ' / ' + pages + '</span>'
+      + '<button type="button" class="btn ghost sm" data-stat-account-page="' + (STAT_ACCOUNT_PAGE + 1) + '"' + (STAT_ACCOUNT_PAGE >= pages ? ' disabled' : '') + '>下一页</button>' : '');
+}
 async function loadStats(){
-  const d = await api('/stats?hours=' + STAT_H), t = d.total;
+  const generation = ++STATS_GENERATION;
+  const [d] = await Promise.all([api('/stats?hours=' + STAT_H), loadRecentRequests()]);
+  if(generation !== STATS_GENERATION) return;
+  const t = d.total;
   document.querySelectorAll('#statWin button').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.h === STAT_H)));
   $('#statCards').innerHTML = kpi('请求', n(t.requests), t.stream + ' 次流式', 'k1') + kpi('成功率', '<span class="' + rateCls(t.success_rate) + '">' + pctS(t.success_rate) + '</span>', t.failed + ' 次失败', 'k2')
     + kpi('缓存命中' + tip('上游报告的缓存命中输入 token ÷ 输入 token'), pctS(t.cache_hit_rate), fmtTok(t.cached) + ' / ' + fmtTok(t.prompt), 'k3')
@@ -90,14 +115,7 @@ async function loadStats(){
   $('#statModels').innerHTML = d.models.map(m => '<tr><td class="mono"><b>' + esc(m.model) + '</b></td><td class="num">' + n(m.requests) + '</td><td class="num ' + rateCls(m.success_rate) + '">' + pctS(m.success_rate)
     + '</td><td class="num">' + fmtTok(m.prompt) + ' / ' + fmtTok(m.completion) + '</td><td class="num">' + pctS(m.cache_hit_rate) + '</td><td class="num">' + round1(m.tps) + '</td><td class="num">'
     + (m.ttft_ms == null ? '-' : Math.round(m.ttft_ms) + ' ms') + '</td><td class="num">' + yuan(m.price_cost) + '</td></tr>').join('') || '<tr><td colspan="8" class="empty">这段时间还没有请求</td></tr>';
-  $('#statAccounts').innerHTML = d.accounts.map(a => '<tr><td>' + esc(a.account) + '</td><td class="num">' + n(a.requests) + '</td><td class="num ' + rateCls(a.success_rate) + '">' + pctS(a.success_rate)
-    + '</td><td class="num">' + pctS(a.cache_hit_rate) + '</td><td class="num">' + yuan(a.price_cost) + '</td></tr>').join('') || '<tr><td colspan="5" class="empty">这段时间还没有请求</td></tr>';
-  $('#statRecent').innerHTML = d.recent.slice(0, 30).map(r => '<tr><td class="nowrap muted" title="' + fmt(r.ts) + '">' + fmtT(r.ts) + '</td><td class="mono">' + requestModelLabel(r) + '</td><td class="nowrap">' + esc(API_NAME[r.path] || r.path)
-    + (r.stream ? ' ' + chip('sm', '流式') : '') + (r.source === 'panel' ? ' ' + chip('info sm', '面板') : '') + '</td><td>' + esc(r.account || '-') + (r.attempts > 1 ? '<div class="muted small">换号 ' + (r.attempts - 1) + ' 次</div>' : '') + '</td>'
-    + '<td>' + (r.ok ? chip('ok sm', r.status) : chip('bad sm', r.status || '失败', r.error) + '<div class="bad-t small" style="max-width:240px">' + esc((r.error || '').slice(0, 80)) + '</div>')
-    + (r.diagnostic_id ? ' <button type="button" class="link" data-request-detail="' + esc(r.diagnostic_id) + '">查看详情</button>' : '') + '</td>'
-    + '<td class="num">' + (r.prompt || r.completion ? n(r.prompt) + ' / ' + n(r.cached) + ' / ' + n(r.completion) : '-') + '</td><td class="num">' + (r.ttft_ms != null ? r.ttft_ms + ' ms' : '-')
-    + '</td><td class="num">' + (r.ms != null ? n(r.ms) + ' ms' : '-') + '</td><td class="num">' + yuan(r.price_cost) + '</td></tr>').join('') || '<tr><td colspan="9" class="empty">还没有请求</td></tr>';
+  STAT_ACCOUNT_ROWS = d.accounts; drawStatAccounts();
 }
 let DETAIL_GENERATION = 0, DETAIL_COPY = [], DETAIL_PAGES = [], DETAIL_DATA = null;
 const DETAIL_PAGE_SIZE = 60000;
@@ -256,7 +274,12 @@ MODAL_CLOSE['#requestDetailModal'] = id => {
   DETAIL_GENERATION++; DETAIL_COPY = []; DETAIL_PAGES = []; DETAIL_DATA = null; $('#requestDetailExport').disabled = true;
   $('#requestDetailBody').textContent = ''; closeModal(id);
 };
+$('#statAccountsPager').addEventListener('click', e => {
+  const b = e.target.closest('[data-stat-account-page]'); if(!b || b.disabled) return;
+  STAT_ACCOUNT_PAGE = Number(b.dataset.statAccountPage); drawStatAccounts();
+});
 $('#statWin').addEventListener('click', e => { const b = e.target.closest('[data-h]'); if(!b) return;
+  if(STAT_H !== +b.dataset.h){ STAT_ACCOUNT_PAGE = 1; STAT_ACCOUNT_ROWS = []; drawStatAccounts(); }
   STAT_H = +b.dataset.h; try { localStorage.setItem('codar-stat-hours', STAT_H); } catch(_) {} loadStats().catch(err => toast(err.message, true)); });
 async function loadUpstream(){
   document.querySelectorAll('#upWin button').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.updays === UPDAYS)));
@@ -273,7 +296,7 @@ $('#upWin').addEventListener('click', e => { const b = e.target.closest('[data-u
 $('#upReload').onclick = () => loadUpstream().catch(err => toast(err.message, true));
 /* ---- 设置：按用途分组，每项后面一句话说明规则 ---- */
 let SET = null, PRICES = [], SETTINGS_PENDING = 0, SETTINGS_REVISION = 0, SETTINGS_SAVE_QUEUE = Promise.resolve();
-const SET_GROUPS = [['relay', ['use_codar_ua', 'codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill', 'detailed_debug', 'request_debug_scope']],
+const SET_GROUPS = [['relay', ['use_codar_ua', 'codar_ua', 'auto_passthrough', 'image_result_base64', 'dsh_identity_rewrite', 'identity_first_line_fill', 'historical_tool_as_user', 'detailed_debug', 'request_debug_scope']],
   ['routing', ['scheduling_strategy', 'max_attempts', 'proxy_connect_retry', 'proxy_connect_switch', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'restricted_request_block', 'allow_general_balance']],
   ['tasks', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']],
   ['remote', ['allow_remote_management']]];
@@ -435,3 +458,7 @@ setInterval(() => loadConcurrency().catch(() => {}), 2000);
 loadRate();
 setInterval(() => loadRate(), 60000);
 setInterval(() => { if(!document.querySelector('[data-page="stats"]').hidden) loadStats().catch(() => {}); }, 10000);
+
+loadPointSpending();
+setInterval(() => { if(!document.hidden && (!document.querySelector('[data-page="accounts"]').hidden || SEL && DTAB === 'usage')) loadPointSpending(); }, 60000);
+setInterval(() => refreshProxyStats().catch(() => {}), 10000);
