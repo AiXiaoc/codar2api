@@ -23,7 +23,7 @@ function harness(){
       dataset:{k:key}, type, value:String(value), disabled:false,
       classList:{contains:name => name === 'sw' && type === 'switch'},
       getAttribute:name => attrs[name], setAttribute:(name, value) => { attrs[name] = value; },
-      closest:selector => selector === '.sw[data-k]' && type === 'switch' || selector === 'select[data-k="request_debug_scope"]' && type === 'select' ? el : null
+      closest:selector => selector === '.sw[data-k]' && type === 'switch' || selector === 'select[data-k="request_debug_scope"]' && key === 'request_debug_scope' ? el : null
     };
     controls.push(el);
     return el;
@@ -32,14 +32,14 @@ function harness(){
     use_codar_ua:true, auto_passthrough:true, dsh_identity_rewrite:true,
     identity_first_line_fill:false, historical_tool_as_user:false, detailed_debug:false, request_debug_scope:'errors', allow_remote_management:true,
     auto_sign:true, auto_claim:true, auto_renew_token:true, ip_block:true, restricted_request_block:false, allow_general_balance:true,
-    codar_ua:'saved agent', max_attempts:3, scheduling_strategy:'round_robin', proxy_connect_retry:false, proxy_connect_switch:false
+    codar_ua:'saved agent', max_attempts:3, account_scheduling_strategy:'default', scheduling_strategy:'round_robin', proxy_connect_retry:false, proxy_connect_switch:false
   };
   Object.entries(initial).forEach(([key, value]) => addControl(key, value,
-    key === 'request_debug_scope' ? 'select' : typeof value === 'boolean' ? 'switch' : typeof value === 'number' ? 'number' : 'text'));
+    ['request_debug_scope', 'account_scheduling_strategy', 'scheduling_strategy'].includes(key) ? 'select' : typeof value === 'boolean' ? 'switch' : typeof value === 'number' ? 'number' : 'text'));
   let saved = {...initial};
   const context = vm.createContext({
-    $:element, SET_CUR:{}, localStorage:{getItem:() => null, setItem:() => {}},
-    document:{querySelectorAll:selector => selector === '#setGrid [data-k]' ? controls : []},
+    $:element, esc:String, SET_CUR:{}, localStorage:{getItem:() => null, setItem:() => {}},
+    document:{querySelector:element, querySelectorAll:selector => selector === '#setGrid [data-k]' ? controls : []},
     toast:(...args) => messages.push(args),
     api:(url, patch) => new Promise((resolve, reject) => {
       calls.push({url, patch:patch === undefined ? undefined : JSON.parse(JSON.stringify(patch)), resolve, reject});
@@ -61,6 +61,34 @@ function harness(){
     current:() => JSON.parse(vm.runInContext('JSON.stringify(SET.settings)', context))
   };
 }
+
+test('points priority uses its own options on the routing tab and saves with the form', async () => {
+  const h = harness();
+  vm.runInContext(`
+    SET.schema = [
+      {key:'account_scheduling_strategy', label:'账号调度策略', type:'select', default:'default'},
+      {key:'scheduling_strategy', label:'调度策略', type:'select', default:'round_robin'}
+    ];
+    SET.account_scheduling_options = [
+      {value:'default', label:'默认'}, {value:'least_points', label:'最少积分优先'}, {value:'most_points', label:'最多积分优先'}
+    ];
+    SET.scheduling_options = [{value:'round_robin', label:'轮询'}];
+    drawSettings(SET.settings);
+  `, h.context);
+  const routing = h.element('[data-setting-fields="routing"]').innerHTML;
+  assert.match(routing, /data-k="account_scheduling_strategy"[^>]*><option value="default" selected>默认<\/option><option value="least_points">最少积分优先<\/option><option value="most_points">最多积分优先<\/option><\/select>/);
+  assert.match(routing, /data-k="scheduling_strategy"[^>]*><option value="round_robin" selected>轮询<\/option><\/select>/);
+  h.control('account_scheduling_strategy').value = 'most_points';
+  await h.change('account_scheduling_strategy');
+  assert.equal(h.calls.length, 0);
+  const save = h.save();
+  await flush();
+  assert.equal(h.calls[0].patch.account_scheduling_strategy, 'most_points');
+  assert.equal(h.calls[0].patch.scheduling_strategy, 'round_robin');
+  h.resolve(0);
+  await save;
+  assert.equal(h.current().account_scheduling_strategy, 'most_points');
+});
 
 test('every settings switch saves only its own value without submitting text drafts', async () => {
   for(const key of ['use_codar_ua', 'auto_passthrough', 'dsh_identity_rewrite', 'identity_first_line_fill',

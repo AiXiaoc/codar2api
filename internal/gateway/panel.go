@@ -32,7 +32,11 @@ func (a *App) panel(r *http.Request, path string, p M) (any, int, error) {
 			a.store.mu.RUnlock()
 			return M{"accounts": rows, "settings": a.store.Settings(), "catalog_at": at}, 200, nil
 		case "/settings":
-			return M{"settings": a.store.Settings(), "schema": schema, "scheduling_options": schedulingOptions, "request_debug_options": requestDebugOptions, "request_blocklist_count": a.requestBlocks.Count()}, 200, nil
+			return M{
+				"settings": a.store.Settings(), "schema": schema,
+				"scheduling_options": schedulingOptions, "account_scheduling_options": accountSchedulingOptions,
+				"request_debug_options": requestDebugOptions, "request_blocklist_count": a.requestBlocks.Count(),
+			}, 200, nil
 		case "/accounts/concurrency":
 			return M{"accounts": a.store.Concurrency()}, 200, nil
 		case "/accounts/spending":

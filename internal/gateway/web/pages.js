@@ -297,7 +297,7 @@ $('#upReload').onclick = () => loadUpstream().catch(err => toast(err.message, tr
 /* ---- 设置：按用途分组，每项后面一句话说明规则 ---- */
 let SET = null, PRICES = [], SETTINGS_PENDING = 0, SETTINGS_REVISION = 0, SETTINGS_SAVE_QUEUE = Promise.resolve();
 const SET_GROUPS = [['relay', ['use_codar_ua', 'codar_ua', 'auto_passthrough', 'image_result_base64', 'dsh_identity_rewrite', 'identity_first_line_fill', 'historical_tool_as_user', 'detailed_debug', 'request_debug_scope']],
-  ['routing', ['scheduling_strategy', 'max_attempts', 'proxy_connect_retry', 'proxy_connect_switch', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'restricted_request_block', 'allow_general_balance']],
+  ['routing', ['account_scheduling_strategy', 'scheduling_strategy', 'max_attempts', 'proxy_connect_retry', 'proxy_connect_switch', 'cooldown_429_seconds', 'cooldown_error_seconds', 'cooldown_balance_seconds', 'ip_block', 'restricted_request_block', 'allow_general_balance']],
   ['tasks', ['auto_sign', 'auto_claim', 'auto_renew_token', 'renew_before_hours', 'refresh_minutes', 'free_check_minutes', 'catalog_ttl_minutes']],
   ['remote', ['allow_remote_management']]];
 let SETTINGS_TAB = 'relay';
@@ -329,12 +329,13 @@ $('#settingsNav').addEventListener('keydown', e => {
 });
 function drawSettings(vals){
   const known = SET_GROUPS.flatMap(g => g[1]), groups = SET_GROUPS.map(g => [g[0], g[1].slice()]);
+  const selectOptions = {account_scheduling_strategy: SET.account_scheduling_options, scheduling_strategy: SET.scheduling_options};
   SET.schema.forEach(f => { if(!known.includes(f.key)) groups.find(g => g[0] === 'tasks')[1].push(f.key); });
   const field = f => '<div class="set' + (f.type === 'string' ? ' set-text' : '') + '"><div class="set-l"><b>' + esc(f.label) + '</b>' + (f.help ? '<span class="muted">' + esc(f.help) + '</span>' : '') + '</div>'
     + (f.type === 'bool' ? (['detailed_debug', 'restricted_request_block'].includes(f.key) ? '<div class="debug-controls">' : '') + sw(vals[f.key], f.label, 'data-k="' + f.key + '" title="默认' + (f.default ? '开' : '关') + '"')
       + (f.key === 'detailed_debug' ? '<select class="in debug-scope-in" data-k="request_debug_scope" aria-label="请求调试日志范围">' + (SET.request_debug_options || []).map(o => '<option value="' + esc(o.value) + '"' + (o.value === vals.request_debug_scope ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') + '</select></div>' : '')
       + (f.key === 'restricted_request_block' ? '<button type="button" class="btn ghost sm" data-clear-request-blocklist' + (SET.request_blocklist_count ? '' : ' disabled') + '>清空黑名单（' + (SET.request_blocklist_count || 0) + '）</button></div>' : '')
-      : f.type === 'select' ? '<select class="in strategy-in" data-k="' + f.key + '" aria-label="' + esc(f.label) + '">' + (SET.scheduling_options || []).map(o => '<option value="' + esc(o.value) + '"' + (o.value === vals[f.key] ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') + '</select>'
+      : f.type === 'select' ? '<select class="in strategy-in" data-k="' + f.key + '" aria-label="' + esc(f.label) + '">' + (selectOptions[f.key] || []).map(o => '<option value="' + esc(o.value) + '"' + (o.value === vals[f.key] ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') + '</select>'
       : f.type === 'string' ? (f.key === 'codar_ua' ? '<div class="ua-controls">' + sw(vals.use_codar_ua, '启用自定义 UA', 'data-k="use_codar_ua" title="开启后替换 UA，关闭后沿用调用方 UA"') : '') + '<input class="in mono text-in" type="text" data-k="' + f.key + '" maxlength="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" autocomplete="off" spellcheck="false">' + (f.key === 'codar_ua' ? '</div>' : '')
       : '<input class="in num-in" type="number" data-k="' + f.key + '" min="' + f.min + '" max="' + f.max + '" value="' + esc(vals[f.key]) + '" aria-label="' + esc(f.label) + '" title="默认 ' + f.default + '，范围 ' + f.min + ' 至 ' + f.max + '">') + '</div>';
   groups.forEach(g => {

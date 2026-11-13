@@ -107,6 +107,65 @@ func TestSchedulingLeastConnectionsAndCapacity(t *testing.T) {
 	}
 }
 
+func TestSchedulingByAvailablePoints(t *testing.T) {
+	s := schedulerStore(t, 1, 1, 1, 1)
+	for i, balance := range []M{{"agent_token": 5, "token": 50}, {"agent_token": 20}, {"agent_token": 20}, {}} {
+		if err := s.Update(fmt.Sprint(i), func(a M) error {
+			a["balance"] = balance
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		strategy     string
+		allowGeneral bool
+		exclude      map[string]bool
+		want         []string
+	}{
+		{"least_points", true, nil, []string{"1", "2", "1"}},
+		{"most_points", true, nil, []string{"0", "0"}},
+		{"most_points", true, map[string]bool{"0": true}, []string{"1", "2"}},
+		{"least_points", false, nil, []string{"0", "0"}},
+		{"most_points", false, nil, []string{"1", "2"}},
+		{"most_points", false, map[string]bool{"0": true, "1": true, "2": true}, []string{"3"}},
+		{"default", false, nil, []string{"0", "1", "2", "3"}},
+	} {
+		if _, err := s.SaveSettings(M{"account_scheduling_strategy": tc.strategy, "allow_general_balance": tc.allowGeneral}); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range tc.want {
+			if got := pickAndRelease(t, s, "", tc.exclude); got != want {
+				t.Fatalf("strategy %s, general %t: picked %s, want %s", tc.strategy, tc.allowGeneral, got, want)
+			}
+		}
+	}
+}
+
+func TestPointsSchedulingUsesExistingStrategyForTies(t *testing.T) {
+	s := schedulerStore(t, 1, 3, 99)
+	if err := s.Update("2", func(a M) error {
+		a["balance"] = M{"agent_token": 200}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveSettings(M{"account_scheduling_strategy": "least_points", "scheduling_strategy": "weighted_round_robin"}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for range 40 {
+		counts[pickAndRelease(t, s, "", nil)]++
+	}
+	if want := (map[string]int{"0": 10, "1": 30}); !reflect.DeepEqual(counts, want) {
+		t.Fatalf("wrong points priority or tie distribution after reload: %v", counts)
+	}
+}
+
 func TestEveryStrategySkipsUnavailableAndFullAccounts(t *testing.T) {
 	for _, option := range schedulingOptions {
 		t.Run(text(option["value"]), func(t *testing.T) {
@@ -262,9 +321,11 @@ func TestAccountSchedulingValidationPersistenceAndImport(t *testing.T) {
 		t.Fatal(r)
 	}
 	for _, invalid := range []any{nil, "invalid", true, 4, []any{}, M{}} {
-		resp, _ := h.request(t, "POST", "/settings", M{"scheduling_strategy": invalid}, false)
-		if resp.StatusCode != 400 {
-			t.Fatalf("accepted strategy %v", invalid)
+		for _, key := range []string{"scheduling_strategy", "account_scheduling_strategy"} {
+			resp, _ := h.request(t, "POST", "/settings", M{key: invalid}, false)
+			if resp.StatusCode != 400 {
+				t.Fatalf("accepted %s value %v", key, invalid)
+			}
 		}
 	}
 	h.post(t, "/accounts/refresh", M{"uid": "a"})
@@ -321,6 +382,9 @@ func TestLegacyStickyMigrationAndSchedulingDefaults(t *testing.T) {
 		}
 		if s.Settings()["scheduling_strategy"] != want {
 			t.Fatal("legacy strategy not migrated")
+		}
+		if s.Settings()["account_scheduling_strategy"] != "default" {
+			t.Fatal("points priority changed the behavior of a legacy installation")
 		}
 		if _, exists := s.Settings()["session_sticky"]; exists {
 			t.Fatal("legacy toggle still exposed")

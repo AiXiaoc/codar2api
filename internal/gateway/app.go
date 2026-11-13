@@ -20,7 +20,7 @@ import (
 //go:embed web/* defaults.json
 var assets embed.FS
 
-var Version = "0.1.4"
+var Version = "0.1.5"
 
 type Config struct {
 	Addr, DataDir, Password, APIBase, PayBase, WebBase, CheckURL, LocalConfig string

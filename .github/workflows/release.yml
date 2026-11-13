@@ -27,8 +27,10 @@ jobs:
             if [ "$GOOS" = windows ]; then bin=codar2api.exe; fi
             mkdir -p "dist/$name"
             go build -trimpath -ldflags="-s -w -X github.com/codar-gateway/codar-gateway/internal/gateway.Version=${tag#v}" -o "dist/$name/$bin" ./cmd/codar
-            cp README.md LICENSE .env.example "dist/$name/"
+            cp README.md CHANGELOG.md LICENSE .env.example "dist/$name/"
             cp -r deploy "dist/$name/"
+            mkdir -p "dist/$name/docs/images"
+            cp docs/images/codar-icon.png "dist/$name/docs/images/"
             if [ "$GOOS" = windows ]; then (cd dist && zip -qr "$name.zip" "$name");
             else tar -czf "dist/$name.tar.gz" -C dist "$name"; fi
           done

@@ -155,6 +155,12 @@ var schedulingOptions = []M{
 	{"value": "least_connections", "label": "最小连接"},
 }
 
+var accountSchedulingOptions = []M{
+	{"value": "default", "label": "默认"},
+	{"value": "least_points", "label": "最少积分优先"},
+	{"value": "most_points", "label": "最多积分优先"},
+}
+
 var requestDebugOptions = []M{
 	{"value": "all", "label": "全部请求"},
 	{"value": "success", "label": "正常请求"},
@@ -185,6 +191,7 @@ var schema = []settingSpec{
 	{"proxy_connect_switch", "bool", false, nil, nil, "失败后切换其他代理", "连接失败且原代理重试用尽后，同一账号临时尝试代理池中其他已启用、未封控的不同代理；未开启原代理重试时直接切换。固定代理和轮询代理均支持，不修改绑定、不回退直连；全部失败后沿用换账号逻辑。"},
 	{"ip_block", "bool", true, nil, nil, "IP 封控时停止调度该 IP", "上游返回 403 拦截时把当前出口 IP 标记为封控，不再调度，换其他出口的账号重试。"},
 	{"restricted_request_block", "bool", false, nil, nil, "403 账号受限时拉黑该请求", "遇到明确的 403 account_restricted 时标记账号受限并停止换号，将相同接口与完整 JSON 内容的请求加入黑名单，后续不再转发给任何账号。关闭后暂停拦截，黑名单保留至手动清空。"},
+	{"account_scheduling_strategy", "select", "default", nil, nil, "账号调度策略", "按可用积分优先选号。积分相同或所有候选账号的积分均未知时，按下方「调度策略」选号。"},
 	{"scheduling_strategy", "select", "round_robin", nil, nil, "调度策略", ""},
 	{"refresh_minutes", "int", 30, 5, 1440, "余额 / 活动刷新间隔（分钟）", "完整刷新账号信息的间隔。"},
 	{"free_check_minutes", "int", 60, 5, 1440, "免费活动检查间隔（分钟）", "检查免费活动与自动领取的间隔。"},
@@ -211,8 +218,13 @@ func cleanSettings(p M, base M) (M, error) {
 			}
 		} else if s.Type == "select" {
 			valid := false
-			options := schedulingOptions
-			if s.Key == "request_debug_scope" {
+			var options []M
+			switch s.Key {
+			case "scheduling_strategy":
+				options = schedulingOptions
+			case "account_scheduling_strategy":
+				options = accountSchedulingOptions
+			case "request_debug_scope":
 				options = requestDebugOptions
 			}
 			for _, option := range options {

@@ -80,6 +80,12 @@ func (s *Store) Pick(model, hint string, exclude map[string]bool, skip func(stri
 		}
 		return nil, errNoAccount
 	}
+	switch text(s.settings["account_scheduling_strategy"]) {
+	case "least_points":
+		ready = s.preferredPointsLocked(ready, false)
+	case "most_points":
+		ready = s.preferredPointsLocked(ready, true)
+	}
 	strategy := text(s.settings["scheduling_strategy"])
 	idx := ready[0]
 	switch strategy {
@@ -124,6 +130,29 @@ func (s *Store) Pick(model, hint string, exclude map[string]bool, skip func(stri
 	}
 	s.inflight[uid]++
 	return clone(account), nil
+}
+
+func (s *Store) preferredPointsLocked(ready []int, highest bool) []int {
+	allowGeneral := yes(s.settings["allow_general_balance"])
+	preferred := ready[:0]
+	var best float64
+	for _, idx := range ready {
+		points, known := spendable(s.accounts[idx], allowGeneral)
+		if !known || math.IsNaN(points) || math.IsInf(points, 0) {
+			continue
+		}
+		if len(preferred) == 0 || highest && points > best || !highest && points < best {
+			best = points
+			preferred = preferred[:0]
+		}
+		if points == best {
+			preferred = append(preferred, idx)
+		}
+	}
+	if len(preferred) == 0 {
+		return ready
+	}
+	return preferred
 }
 
 func (s *Store) Reserve(uid, model string, skip func(string) bool) (M, error) {
