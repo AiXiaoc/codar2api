@@ -465,10 +465,11 @@ func TestAccountRequestRecordsKeepSwitchedAttempts(t *testing.T) {
 }
 func TestAccountExportImportRoundTrip(t *testing.T) {
 	h := newHarness(t, nil)
-	h.add(t, "a", M{"note": "主力", "enabled": false, "login_via": "wechat"})
+	token := fakeToken("a")
+	h.add(t, "a", M{"token": token, "note": "主力", "enabled": false, "login_via": "wechat"})
 	h.add(t, "b", nil)
 	file := h.post(t, "/accounts/export", M{})
-	if file["format"] != exportFormat || len(arr(file["accounts"])) != 2 || !bytes.Contains(mustJSON(file), []byte(fakeToken("a"))) {
+	if file["format"] != exportFormat || len(arr(file["accounts"])) != 2 || !bytes.Contains(mustJSON(file), []byte(token)) {
 		t.Fatalf("export incomplete: %v", file)
 	}
 	if one := h.post(t, "/accounts/export", M{"uids": []any{"b"}}); len(arr(one["accounts"])) != 1 {
@@ -623,7 +624,8 @@ func TestNormalizedUsageProtocols(t *testing.T) {
 }
 func TestManagementPagesAndNoSecretLeaks(t *testing.T) {
 	h := newHarness(t, nil)
-	h.add(t, "secret-user", nil)
+	token := fakeToken("secret-user")
+	h.add(t, "secret-user", M{"token": token})
 	for _, path := range []string{"/assets/../defaults.json", "/assets/login.html", "/assets/missing.js"} {
 		if resp, _ := h.request(t, "GET", path, nil, false); resp.StatusCode != 404 {
 			t.Fatalf("%s served: HTTP %d", path, resp.StatusCode)
@@ -634,7 +636,7 @@ func TestManagementPagesAndNoSecretLeaks(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s HTTP %d: %s", path, resp.StatusCode, b)
 		}
-		if bytes.Contains(b, []byte(fakeToken("secret-user"))) || bytes.Contains(b, []byte(h.key)) {
+		if bytes.Contains(b, []byte(token)) || bytes.Contains(b, []byte(h.key)) {
 			t.Fatalf("secret leaked at %s", path)
 		}
 	}
